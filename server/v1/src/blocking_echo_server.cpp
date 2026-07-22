@@ -54,30 +54,37 @@ void BlockingEchoServer::Server_Run(){
         return;
     }
 
-    // 5) accept 루프: 클라이언트를 하나씩 받아서 처리
+    // 5) accept 루프: 클라이언트를 하나씩 받아서 처리 (한 번에 한 커넥션만 — v1은 동시성이 없는 baseline)
     while(true){
         cout << "Waiting Client's Connection..." << endl;
-        sockaddr_in client_addr{};
+        sockaddr_in client_addr{};       // output 전용: accept()가 접속한 클라이언트의 주소를 여기에 채워줌
         socklen_t client_len = sizeof(client_addr);
 
+        // accept()도 recv()처럼 진짜로 블로킹된다 — 접속이 들어올 때까지 이 스레드는 멈춰있음.
+        // 성공 시 리스닝 소켓(this->fd)과는 별개인 새 fd를 리턴 (이 커넥션 전용 fd).
         int accept_result = accept(this->fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
-        
+
         if(accept_result < 0){
             perror("accept_result < 0");
-            continue;
+            continue; // 이 접속 시도만 실패한 것 — 리스닝 소켓 자체는 멀쩡하므로 서버를 죽이지 않고 다음 accept로 재시도
         }
 
         char buffer[4096];
+        // 이 클라이언트가 연결을 끊을 때까지 반복되는 echo 루프. 다음 accept()로 못 돌아가므로
+        // 그동안 다른 클라이언트의 접속 요청은 커널 backlog 큐에 쌓이기만 하고 처리되지 않음(blocking의 한계).
         while(true){
             cout << "Receving Client Buffer..." << endl;
             ssize_t recv_result = recv(accept_result, buffer, sizeof(buffer), 0);
 
             if(recv_result == 0 || recv_result < 0){
-            cout << "Closing Client Connection..." << endl;
-                close(accept_result);
+                // recv_result == 0: 클라이언트가 정상적으로 연결을 종료(FIN)했다는 뜻
+                // recv_result < 0: 에러(errno) — 두 경우 모두 이 커넥션은 더 이상 쓸 수 없으므로 정리하고 다음 accept로 복귀
+                cout << "Closing Client Connection..." << endl;
+                close(accept_result); // 이 클라이언트 전용 fd만 닫음. 리스닝 소켓(this->fd)은 절대 여기서 닫지 않음(닫으면 이후 accept가 전부 실패)
                 break;
             }
             else if(recv_result > 0) {
+                // 받은 바이트 수(recv_result)만큼만 그대로 돌려보냄 (buffer는 널 종료가 보장되지 않으므로 길이를 명시)
                 cout << "Sending Client Buffer: " << buffer << endl;
                 send(accept_result, buffer, recv_result, 0);
             }
