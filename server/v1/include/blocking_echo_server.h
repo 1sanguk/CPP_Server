@@ -9,9 +9,9 @@ class BlockingEchoServer{
         // port만 저장. 실제 소켓 생성/bind/listen은 Server_Run()에서 수행.
         BlockingEchoServer(const int port);
 
-        // socket()~listen()으로 서버를 준비시키고, accept 루프를 돌며 클라이언트를 순차적으로 처리.
-        void Server_Run();
-
         // fd가 유효하면(-1이 아니면) close()로 소켓을 정리.
         ~BlockingEchoServer();
+        
+        // socket()~listen()으로 서버를 준비시키고, accept 루프를 돌며 클라이언트를 순차적으로 처리.
+        void Server_Run();
 };

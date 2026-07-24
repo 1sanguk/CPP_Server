@@ -22,15 +22,15 @@ BlockingEchoServer::~BlockingEchoServer(){
 }
 
 void BlockingEchoServer::Server_Run(){
-    cout << "Server Running...." << endl;
+    cout << "Blocking Echo Server Running...." << endl;
     // 1) TCP/IPv4 소켓 생성. 실패 시 -1 리턴 (예외가 아니라 리턴값으로 에러를 알려줌).
     int socket_result = socket(AF_INET, SOCK_STREAM, 0);
     if(socket_result < 0){
         perror("socket_result < 0");
         return;
-    }else{
-        this->fd = socket_result;
     }
+    
+    this->fd = socket_result;
 
     // 2) 이 소켓을 어떤 주소/포트에 묶을지 채움
     sockaddr_in addr{};
@@ -76,7 +76,7 @@ void BlockingEchoServer::Server_Run(){
             cout << "Receving Client Buffer..." << endl;
             ssize_t recv_result = recv(accept_result, buffer, sizeof(buffer), 0);
 
-            if(recv_result == 0 || recv_result < 0){
+            if(recv_result <= 0){
                 // recv_result == 0: 클라이언트가 정상적으로 연결을 종료(FIN)했다는 뜻
                 // recv_result < 0: 에러(errno) — 두 경우 모두 이 커넥션은 더 이상 쓸 수 없으므로 정리하고 다음 accept로 복귀
                 cout << "Closing Client Connection..." << endl;
@@ -90,4 +90,6 @@ void BlockingEchoServer::Server_Run(){
             }
         }
     }
+
+    cout << "Blocking Echo Server Stopped...." << endl;
 }
