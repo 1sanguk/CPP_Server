@@ -31,6 +31,9 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 - [basicdata/benchmark.md](basicdata/benchmark.md) — 버전별 성능 실측치
 - [basicdata/troubleshooting.md](basicdata/troubleshooting.md) — 버그 재현/수정 기록
 - [basicdata/learnings.md](basicdata/learnings.md) — 버전별로 깨달은 개념 정리
+- [basicdata/feedback.md](basicdata/feedback.md) — AI의 피드백 기록
 
 ## 현재 상태
 v1(싱글 스레드 blocking TCP 서버) 완료.
+v2(thread-per-connection) 완료.
+- v2는 `nc` 다중 접속과 `lsof`로 클라이언트별 fd 정리(close)까지 수동 확인함.

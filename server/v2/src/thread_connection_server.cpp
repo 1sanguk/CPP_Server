@@ -71,7 +71,7 @@ void ThreadPerConnectionEchoServer::Server_Run(){
         int accept_result = accept(this->fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
 
         if(accept_result < 0){
-            cout << "accept_result < 0" << endl;
+            perror("accept_result < 0");
             continue; // 이 접속 시도만 실패한 것 — 서버를 죽이지 않고 다음 accept로 재시도
         }
 
@@ -83,8 +83,6 @@ void ThreadPerConnectionEchoServer::Server_Run(){
         thread t(&ThreadPerConnectionEchoServer::Process_Client, this, accept_result);
         t.detach();
     }
-
-    cout << "Thread Per Connection Echo Server Stopped...." << endl;
 }
 
 // 클라이언트 fd 하나를 전담하는 함수. 각자 별도 스레드 위에서 실행되므로
@@ -108,7 +106,7 @@ void ThreadPerConnectionEchoServer::Process_Client(int client_fd){
             // recv_result 길이만큼만 잘라서 std::string으로 감싼다.
             std::string s(buffer, recv_result);
             cout << "Sending " << client_fd << " Client Buffer: " << s << endl;
-            
+
             // 실제 전송은 buffer를 recv_result 길이만큼만 그대로 돌려보냄.
             send(client_fd, buffer, recv_result, 0);
         }

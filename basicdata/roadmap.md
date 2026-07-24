@@ -88,6 +88,10 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 버그를 고치거나 개념을 짚으면서 실제로 이해하게 된 포인트 정리.
 → [basicdata/learnings.md](learnings.md)
 
+## 피드백
+기획한대로 구현한 서버를 AI에게 피드백 받아 어떤 점이 부족했는지 확인하기 위한 기록.
+→ [basicdata/feedback.md](feedback.md)
+
 ## 빌드 도구 / 에디터
 - cmake + Homebrew 설치 완료. `server/` 아래에서 `cmake -S . -B build && cmake --build build`로 빌드.
 - 개발은 맥북 + Windows 두 컴퓨터에서 진행할 예정. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 사용 불가 ("Visual Studio for Mac"은 단종되었고 애초에 C++용도 아니었음) → 맥에서는 **VS Code**(CMake 확장)를 사용하고, cmake 기반이라 나중에 Windows의 Visual Studio(CMake 내장 지원)로 넘어가도 같은 소스를 그대로 쓸 수 있음.
@@ -95,7 +99,7 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ## 현재 상태
 - [x] v1 — 싱글 스레드 blocking TCP 서버
-- [ ] v2 — thread-per-connection
+- [x] v2 — thread-per-connection
 - [ ] v3 — 고정 크기 thread pool + 작업 큐
 - [ ] v4 — epoll 기반 이벤트 루프
 - [ ] v5 — 이벤트 루프 + 워커 스레드 풀 결합

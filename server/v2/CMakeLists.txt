@@ -1,4 +1,4 @@
-# v1: 싱글 스레드 blocking TCP echo 서버
+# v2: 접속마다 전담 스레드를 생성하는 thread-per-connection echo 서버
 add_executable(v2_server
     src/main.cpp
     src/thread_connection_server.cpp

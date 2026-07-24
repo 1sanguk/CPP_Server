@@ -18,4 +18,9 @@
 
 ---
 
-(아직 기록 없음)
+### [v2] 멤버 함수 포인터 스코프 누락으로 컴파일 실패
+- 증상: `thread t(Process_Client, this, accept_result);`처럼 클래스 스코프 없이 멤버 함수 이름만 넘기면 컴파일 에러가 발생함.
+- 원인: 비정적 멤버 함수의 주소를 얻으려면 반드시 `&ClassName::MemberFunc` 형태로 명시적으로 스코프를 붙여야 함. 이름만 쓰면 컴파일러가 어떤 클래스의 멤버인지 알 수 없어 포인터-투-멤버 타입을 만들지 못함.
+- 재현 방법: 위 코드를 그대로 작성 후 빌드해서 에러 확인.
+- 해결: `thread t(&ThreadPerConnectionEchoServer::Process_Client, this, accept_result);`로 수정.
+- 배운 점: 멤버 함수를 콜백/스레드 진입점으로 넘길 때는 항상 `&Class::Member` 형태를 써야 한다.
