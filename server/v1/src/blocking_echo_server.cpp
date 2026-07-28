@@ -5,6 +5,8 @@
 #include <sys/socket.h>
 #include <iostream>
 
+#include <cerrno>
+
 using std::cout;
 using std::endl;
 
@@ -32,6 +34,24 @@ void BlockingEchoServer::Server_Run(){
     
     this->fd = socket_result;
 
+    // 기존에는 socket() 직후 바로 bind()했지만, 서버 종료 후 남아 있는 이전 연결 상태 때문에
+    // 같은 주소/포트로 즉시 재실행할 때 bind()가 실패할 수 있었다.
+    // SO_REUSEADDR를 bind() 전에 설정해 해당 주소를 안전하게 다시 사용할 수 있도록 한다.
+    int reuse_addr = 1;
+    int option_result = setsockopt(
+        this->fd,
+        SOL_SOCKET,         // 소켓 API 공통 옵션 레벨
+        SO_REUSEADDR,       // 종료 후 남은 주소를 재사용하도록 허용
+        &reuse_addr,        // 1: 옵션 활성화
+        sizeof(reuse_addr)  // 커널에 전달하는 옵션 값의 크기
+    );
+
+    // setsockopt()도 예외가 아니라 음수 반환값으로 실패를 알린다.
+    if(option_result < 0){
+        perror("option_result < 0");
+        return;
+    }
+
     // 2) 이 소켓을 어떤 주소/포트에 묶을지 채움
     sockaddr_in addr{};
     addr.sin_family = AF_INET;         // IPv4
@@ -46,7 +66,7 @@ void BlockingEchoServer::Server_Run(){
         return;
     }
 
-    // 4) 접속 대기 상태로 전환. 16은 대기 큐(backlog) 크기.
+    // 4) 접속 대기 상태로 전환. kBacklog는 커널의 연결 대기 큐 크기.
     cout << "Listening " << this->fd << " : " << kBacklog << "..." << endl;
     int listen_result = listen(this->fd, kBacklog);
     if(listen_result < 0){
@@ -76,20 +96,70 @@ void BlockingEchoServer::Server_Run(){
             cout << "Receving Client Buffer..." << endl;
             ssize_t recv_result = recv(accept_result, buffer, sizeof(buffer), 0);
 
-            if(recv_result <= 0){
-                // recv_result == 0: 클라이언트가 정상적으로 연결을 종료(FIN)했다는 뜻
-                // recv_result < 0: 에러(errno) — 두 경우 모두 이 커넥션은 더 이상 쓸 수 없으므로 정리하고 다음 accept로 복귀
-                cout << "Closing Client Connection..." << endl;
+            // 기존에는 recv_result <= 0을 한 분기에서 처리했지만, 오류와 정상 종료를 구분하도록 변경했다.
+            // recv_result < 0: 오류. EINTR이면 실제 소켓 장애가 아니므로 recv()를 다시 시도하고,
+            // 그 밖의 오류면 클라이언트 fd를 닫고 다음 accept로 복귀한다.
+            if(recv_result < 0){
+                if(errno == EINTR){
+                    continue;
+                }
+
+                perror("recv_result < 0...");
+                close(accept_result); // 이 클라이언트 전용 fd만 닫음. 리스닝 소켓(this->fd)은 절대 여기서 닫지 않음(닫으면 이후 accept가 전부 실패)
+                break;
+            }
+            else if(recv_result == 0){
+                // recv_result == 0: 오류가 아니라 클라이언트가 FIN을 보내 정상적으로 연결을 종료한 경우다.
                 close(accept_result); // 이 클라이언트 전용 fd만 닫음. 리스닝 소켓(this->fd)은 절대 여기서 닫지 않음(닫으면 이후 accept가 전부 실패)
                 break;
             }
             else if(recv_result > 0) {
-                // 받은 바이트 수(recv_result)만큼만 그대로 돌려보냄 (buffer는 널 종료가 보장되지 않으므로 길이를 명시)
-                cout << "Sending Client Buffer: " << buffer << endl;
-                send(accept_result, buffer, recv_result, 0);
+                // buffer는 널 종료가 보장되지 않으므로 로그도 recv_result 길이만큼만 출력한다.
+                cout << "Sending Client Buffer: ";
+                cout.write(buffer, recv_result);
+                cout << endl;
+
+                // 기존의 단일 send() 호출은 partial send가 발생하면 나머지 데이터가 유실될 수 있었다.
+                // Send_All()이 받은 길이를 모두 전송할 때까지 반복하고, 실패하면 연결을 정리한다.
+                // 이전 단일 전송 구현(비교용): send(accept_result, buffer, recv_result, 0);
+                bool send_flag = this->Send_All(accept_result, buffer, recv_result);
+                if(!send_flag){
+                    cout << "Sending Client Buffer Failed: " << accept_result << endl;
+                    close(accept_result);
+                    break;
+                }
             }
         }
     }
 
     cout << "Blocking Echo Server Stopped...." << endl;
+}
+
+bool BlockingEchoServer::Send_All(int client_fd, const char* data, std::size_t length){
+    // 지금까지 실제로 전송한 바이트 수. length에 도달하면 전체 전송이 완료된 것이다.
+    std::size_t total_sent = 0;
+
+    while (total_sent < length){
+        // partial send 이후에는 이미 보낸 범위를 건너뛰고 남은 주소와 길이만 다시 전달한다.
+        const char* start_data = data + total_sent;
+        std::size_t send_len = length - total_sent;
+
+        cout << "Blocking Echo Server Sending: " << client_fd << "-> ";
+        cout.write(start_data, send_len);
+        cout << endl;
+        ssize_t send_result = send(client_fd, start_data, send_len, 0);
+        if(send_result > 0){
+            total_sent += send_result;
+        }
+        else if(send_result < 0 && errno == EINTR){
+            // 시그널로 중단된 경우에는 전송량을 변경하지 않고 같은 남은 범위를 다시 시도한다.
+            continue;
+        }
+        else{
+            perror("send_result > 0");
+            return false;
+        }
+    }
+
+    return true;
 }

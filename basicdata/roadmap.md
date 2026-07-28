@@ -8,12 +8,14 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 - 클라이언트는 Windows에서 플레이됨. TCP/IP는 프로토콜 레벨이라 클라이언트 OS는 서버 코드에 영향을 주지 않으므로 무시해도 됨.
 - 서버 배포 환경은 **Linux로 확정**. 따라서 이벤트 루프 단계(v4~)는 **Linux epoll**을 기준으로 한다.
 - 이유: "대부분 MMO 서버가 Linux에 배포된다"는 일반론이 아니라, 실제 이 프로젝트의 배포 타겟이 Linux이기 때문.
-- v1~v3는 BSD 소켓 API 기반이라 macOS(로컬)에서도, Linux에서도 동일하게 동작하므로 별도 환경 없이 바로 진행 가능. v1은 맥북에서 완료.
+- v1~v3는 POSIX/BSD 소켓 API 기반이라 macOS(로컬)에서 구현과 검증을 완료했다.
+  Linux에서도 같은 API를 사용할 수 있지만 배포 전 별도 회귀 테스트는 필요하다.
 - v4~는 Linux 환경이 필요. Windows 컴퓨터로 개발을 옮길 때는 WSL2를 사용하기로 함(Winsock 등 크로스플랫폼 소켓 코드를 따로 짤 필요 없이, 서버 배포 환경(Linux)과 100% 동일한 조건으로 개발 가능) — 아직 미착수.
 
 ## 버전별 계획
 
 ### v1 — 싱글 스레드 blocking TCP 서버
+- **상태**: 완료
 - **목표**: 동시성 없이 소켓 API 자체(`socket`/`bind`/`listen`/`accept`/`recv`/`send`/`close`) 흐름을 익히는 baseline.
 - **구현 세부사항**:
   - 접속 1개만 처리 가능 (accept → echo 루프 → 연결 종료 시 다음 accept로 복귀)
@@ -24,26 +26,36 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
   - 두 번째 클라이언트가 접속을 시도하면 첫 번째 처리가 끝날 때까지 멈춰있는지 확인 (blocking의 한계를 직접 체감하는 것이 이 버전의 QA 포인트)
 
 ### v2 — thread-per-connection
+- **상태**: 완료
 - **목표**: 접속마다 `std::thread` 하나씩 생성. 기본적인 스레드/락/레이스 컨디션 감각 습득.
 - **구현 세부사항**:
   - accept 후 클라이언트 핸들러를 `std::thread`로 분리, `detach` 또는 종료 시 `join`으로 정리
   - 공유 자원(전체 접속자 목록 등)에 `std::mutex` + `std::lock_guard` 적용
-  - 서버 종료 시 모든 스레드를 안전하게 정리하는 graceful shutdown
+  - 접속별 스레드는 `detach()`하고, 활성 client fd 목록은 mutex로 보호
+  - `detach()`의 수명 관리 한계는 구조 비교를 위해 의도적으로 유지하고 v3에서 worker 소유와
+    graceful shutdown을 학습
 - **테스트/QA**:
   - 여러 클라이언트를 동시에 접속시켜 병렬로 echo가 되는지 확인 (nc 여러 개 또는 간단한 부하 스크립트)
-  - `mutex` 없이 공유 자원에 접근하는 코드를 일부러 넣어보고 `-fsanitize=thread`(ThreadSanitizer)로 race condition이 잡히는지 확인 → 이후 mutex 적용 코드와 비교
   - 다수 클라이언트가 급격히 접속/종료를 반복할 때 스레드 누수(leak) 없는지 확인
+  - 완료 결과: 동시 echo와 최대 10개 병렬의 50개 접속·종료 반복 성공, 활성 count 0과
+    client fd 정리 확인
 
 ### v3 — 고정 크기 thread pool + 작업 큐
+- **상태**: 완료
 - **목표**: 스레드 개수를 접속자 수와 분리. 생산자-소비자 패턴, 조건 변수 학습.
 - **구현 세부사항**:
-  - 고정 개수 워커 스레드 풀 생성 (예: `std::thread::hardware_concurrency()` 기준)
+  - 고정 worker 스레드 4개 생성
   - 작업 큐: `std::queue` + `std::mutex` + `std::condition_variable`
   - accept 스레드(생산자)가 큐에 작업을 넣고, 워커 스레드(소비자)가 꺼내 처리
+  - 최대 128개의 bounded queue와 초과 연결 거부 정책
+  - SIGINT/SIGTERM 동기 처리와 worker/monitor join을 포함한 graceful shutdown
+  - 30초 주기 worker 상태 monitor와 종료 알림에 즉시 반응하는 `wait_for()`
 - **테스트/QA**:
   - 동시 접속 수가 스레드 풀 크기를 초과할 때(예: 접속 100개, 워커 4개) 큐잉이 정상 동작하는지 확인
   - 큐가 비었을 때 워커 스레드가 busy-wait 없이 `condition_variable::wait`로 대기하는지 CPU 사용률로 확인
   - v2와 동일한 부하에서 스레드 생성 오버헤드가 줄었는지 비교 (스레드 개수 고정 확인)
+  - 완료 결과: 동시 echo 50개 50/50 성공, 장기 연결 140개 중 worker 4개와 큐 128개
+    유지 및 초과 8개 거부, 활성 연결 6개 상태의 `Ctrl+C` 정상 종료 확인
 
 ### v4 — epoll 기반 이벤트 루프 (단일 스레드 reactor)
 - **목표**: I/O multiplexing으로 다수의 소켓을 논블로킹으로 처리, C10K 문제 체감.
@@ -70,7 +82,8 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 각 버전은 `server/` 아래 `v1`, `v2` 등 버전별 하위 폴더(`include`/`src`/`CMakeLists.txt`)로 분리하고, 최상위 `server/CMakeLists.txt`가 `add_subdirectory()`로 각 버전을 불러온다. 버전마다 독립된 실행 파일(`v1_server`, `v2_server`, ...)로 빌드되어 언제든 원하는 버전을 골라 실행할 수 있다.
 
 ## 공통 테스트/QA 도구
-- **동시성 버그 검출**: ThreadSanitizer(`-fsanitize=thread`), AddressSanitizer(`-fsanitize=address`) — v2부터 컴파일 옵션에 상시 포함
+- **동시성 버그 검출**: 필요할 때 별도 빌드에 ThreadSanitizer(`-fsanitize=thread`)를 적용.
+  AddressSanitizer(`-fsanitize=address`)도 이후 버전에서 별도 검증용으로 사용
 - **메모리 누수 검출**: `valgrind`(Linux) 또는 Xcode Instruments(macOS)
 - **수동 접속 테스트**: `nc`, `telnet`
 - **부하 테스트**: 간단한 멀티 커넥션 클라이언트를 직접 C++로 작성해 버전마다 재사용 (동시 접속 수, 메시지 처리량을 버전별로 비교하는 벤치마크 역할도 겸함)
@@ -94,12 +107,12 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ## 빌드 도구 / 에디터
 - cmake + Homebrew 설치 완료. `server/` 아래에서 `cmake -S . -B build && cmake --build build`로 빌드.
-- 개발은 맥북 + Windows 두 컴퓨터에서 진행할 예정. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 사용 불가 ("Visual Studio for Mac"은 단종되었고 애초에 C++용도 아니었음) → 맥에서는 **VS Code**(CMake 확장)를 사용하고, cmake 기반이라 나중에 Windows의 Visual Studio(CMake 내장 지원)로 넘어가도 같은 소스를 그대로 쓸 수 있음.
+- 개발은 맥북 + Windows 두 컴퓨터에서 진행할 예정. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 사용 불가 ("Visual Studio for Mac"은 단종되었고 애초에 C++용도 아니었음) → 맥에서는 **VS Code**(CMake 확장)를 사용한다.
 - Windows에서는 WSL2로 개발 (v4~ Linux epoll 목표와 서버 배포 환경(Linux)에 맞추기 위해).
 
 ## 현재 상태
 - [x] v1 — 싱글 스레드 blocking TCP 서버
 - [x] v2 — thread-per-connection
-- [ ] v3 — 고정 크기 thread pool + 작업 큐
+- [x] v3 — 고정 크기 thread pool + 작업 큐
 - [ ] v4 — epoll 기반 이벤트 루프
 - [ ] v5 — 이벤트 루프 + 워커 스레드 풀 결합

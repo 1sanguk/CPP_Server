@@ -23,3 +23,32 @@
 - **`recv()`로 채운 버퍼는 널 종료가 보장되지 않는다.** 문자열처럼 로그에 찍고 싶으면 `std::string(buffer, recv_result)`처럼 유효한 길이를 명시해서 감싸야 한다. 그냥 `cout << buffer`로 찍으면 이전 반복의 잔여 데이터나 초기화되지 않은 값 때문에 쓰레기 문자가 더 찍히거나, 최악의 경우 배열 범위를 넘어 읽는 UB로 이어질 수 있음.
 
 - **`detach()`는 스레드 수명 관리를 포기하는 대신 구현을 단순하게 만드는 트레이드오프다.** thread-per-connection처럼 스레드가 일회성이면 detach로 충분하지만(스레드가 알아서 끝남), v3의 고정 크기 thread pool처럼 스레드를 미리 만들어 재사용하는 구조에서는 서버 종료 시 각 워커를 안전하게 멈추고 `join()`으로 정리하는 과정이 반드시 필요해진다.
+
+## v3 — 고정 크기 thread pool + bounded 작업 큐
+
+- **`condition_variable::wait()`는 mutex를 계속 잡고 잠드는 것이 아니다.** 대기하는 동안
+  mutex를 풀어 생산자가 큐에 작업을 넣을 수 있게 하고, 깨어난 뒤 mutex를 다시 획득한
+  상태에서 predicate를 확인한다. 그래서 작업 큐의 확인과 pop을 하나의 임계 영역으로
+  유지할 수 있다.
+
+- **중첩된 반복문이 많다고 시간복잡도가 자동으로 커지는 것은 아니다.** worker의 바깥
+  반복문은 다음 작업을 기다리는 수명 주기이고, 안쪽 `recv()` 반복문은 현재 연결 하나의
+  메시지를 처리한다. 두 반복의 입력 크기를 곱해 전부 순회하는 구조가 아니므로 코드의
+  중첩 깊이만 보고 `O(n²)`로 판단할 수 없다.
+
+- **고정 thread pool은 스레드 수를 제한하지만 대기 작업 수까지 제한하지는 않는다.**
+  별도의 최대 큐 크기가 없으면 worker보다 빠르게 연결이 들어올 때 fd가 계속 누적된다.
+  v3에서는 큐를 128개로 제한하고 초과 연결을 닫는 정책을 적용했다.
+
+- **종료 상태만 바꿔서는 blocking 시스템 호출이 자동으로 끝나지 않는다.** worker의
+  `recv()`는 client 소켓 `shutdown()`으로 깨웠고, macOS에서 listen 소켓 `shutdown()`만으로
+  `accept()`가 풀리지 않는 경우에는 non-blocking listen fd와 timeout이 있는 `poll()`로
+  종료 상태를 다시 확인하도록 구성했다.
+
+- **주기 작업도 종료 알림을 받을 수 있어야 한다.** monitor가 `sleep_for(30초)`를 사용하면
+  종료 직후에도 최대 30초 동안 join을 기다린다. 같은 condition variable의 `wait_for()`와
+  종료 predicate를 사용하면 평상시 주기는 유지하면서 `notify_all()`에는 즉시 반응한다.
+
+- **signal handler에서 일반 C++ 동기화 코드를 직접 호출하면 안 된다.** mutex와
+  condition variable 조작은 async-signal-safe하지 않으므로 SIGINT/SIGTERM을 막은 뒤
+  main 스레드의 `sigwait()`에서 동기적으로 받아 `Stop()`을 호출했다.

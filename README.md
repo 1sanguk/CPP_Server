@@ -10,11 +10,11 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 버전별 상세 계획은 [basicdata/roadmap.md](basicdata/roadmap.md) 참고.
 
 ## 버전 개요
-1. **v1** — 싱글 스레드 blocking TCP 서버 (소켓 API 익히기)
-2. **v2** — thread-per-connection (기본 멀티스레드, mutex)
-3. **v3** — 고정 크기 thread pool + 작업 큐 (조건 변수, 생산자-소비자 패턴)
-4. **v4** — epoll 기반 이벤트 루프 (단일 스레드 reactor)
-5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (실제 상용 MMO 서버에 가까운 구조)
+1. **v1** — 싱글 스레드 blocking TCP 서버 (완료)
+2. **v2** — thread-per-connection (완료)
+3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료)
+4. **v4** — epoll 기반 이벤트 루프 (예정)
+5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (예정)
 
 ## 타겟 플랫폼
 - **클라이언트**: Windows에서 플레이됨. 단, TCP/IP는 프로토콜 레벨이라 클라이언트 OS는 서버 코드에 영향을 주지 않음.
@@ -23,9 +23,11 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 - v4~v5: Linux epoll 타겟 (Docker/VM 환경 필요, 실제 배포 환경과 동일)
 
 ## 빌드 / 개발 환경
-- 빌드 시스템: cmake (Homebrew로 설치 완료). 같은 `CMakeLists.txt`로 macOS(Makefile/Ninja)와 Windows(Visual Studio 솔루션)를 모두 생성 가능.
+- 빌드 시스템: CMake (Homebrew로 설치 완료). 현재 POSIX 소켓 코드는 macOS와
+  Linux/WSL2 환경에서 같은 `CMakeLists.txt`로 빌드한다.
 - 에디터: 맥에서는 **VS Code**(CMake 확장) 사용. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 실행 불가 ("Visual Studio for Mac"은 단종 + C++용도 아니었음).
-- 이후 Windows로 넘어갈 때는 WSL2에서 같은 소스를 그대로 사용 (서버 배포 환경인 Linux와 100% 동일한 조건으로 개발하기 위함).
+- 이후 Windows로 넘어갈 때는 native Windows 빌드가 아니라 WSL2에서 같은 소스를 사용
+  (서버 배포 환경인 Linux와 같은 조건으로 개발하기 위함).
 
 ## 관련 문서
 - [basicdata/benchmark.md](basicdata/benchmark.md) — 버전별 성능 실측치
@@ -34,6 +36,16 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 - [basicdata/feedback.md](basicdata/feedback.md) — AI의 피드백 기록
 
 ## 현재 상태
-v1(싱글 스레드 blocking TCP 서버) 완료.
-v2(thread-per-connection) 완료.
-- v2는 `nc` 다중 접속과 `lsof`로 클라이언트별 fd 정리(close)까지 수동 확인함.
+- [x] **v1** — blocking socket 흐름, partial send, `EINTR`, 길이 기반 로그,
+  `SO_REUSEADDR`까지 구현 및 echo 회귀 테스트 완료
+- [x] **v2** — thread-per-connection, 활성 client 목록의 mutex 보호, 동시 접속과
+  fd 정리 테스트 완료
+- [x] **v3** — 고정 worker 4개, 최대 128개의 bounded queue, condition variable,
+  worker monitor, SIGINT/SIGTERM graceful shutdown 구현 완료
+  - 동시 echo 50개 요청 50/50 성공
+  - 장기 연결 140개 포화 테스트에서 worker 처리 4개 + 큐 대기 128개 유지,
+    초과 연결 8개 거부 확인
+  - 활성 연결 6개 상태에서 `Ctrl+C` 종료 시 client 정리, worker/monitor join,
+    `Stopping` 출력과 프로세스 종료 확인
+- [ ] **v4** — epoll 기반 이벤트 루프
+- [ ] **v5** — 이벤트 루프 + 워커 스레드 풀
