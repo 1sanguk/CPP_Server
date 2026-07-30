@@ -23,12 +23,13 @@ EpollEchoServer::EpollEchoServer(int port){
 }
 
 EpollEchoServer::~EpollEchoServer(){
+    // Stop()은 종료 요청, CleanUp()은 fd 정리를 담당한다. CleanUp()은 중복 호출되어도 안전하다.
     this->Stop();
     this->CleanUp();
 }
 
 void EpollEchoServer::Server_Run(){
-    //  socket -> bind -> listen -> accept
+    // listen fd, client fd, stop event fd를 epoll 이벤트 루프에서 함께 처리한다.
     cout << "[EpollEchoServer] Server starting on port " << this->server_port << endl;
 
     int socket_result = socket(AF_INET, SOCK_STREAM, 0);
@@ -47,6 +48,7 @@ void EpollEchoServer::Server_Run(){
         this->listen_fd = socket_result;
     }
 
+    // 개발 중 같은 포트를 빠르게 재사용할 수 있도록 bind 전에 설정한다.
     int reuse_addr = 1;
     int option_result = setsockopt(
         this->listen_fd,
@@ -95,6 +97,7 @@ void EpollEchoServer::Server_Run(){
 
     this->epoll_fd = epoll_result;
 
+    // listen fd는 새 연결 요청을 의미하므로, 이벤트가 오면 accept()로 처리한다.
     epoll_event listen_event{};
     listen_event.events = EPOLLIN;
     listen_event.data.fd = this->listen_fd;
@@ -115,6 +118,7 @@ void EpollEchoServer::Server_Run(){
 
     this->stop_event_fd = stop_fd_result;
 
+    // Stop()이 eventfd에 write하면 epoll_wait()가 깨어나 종료 분기로 들어온다.
     epoll_event stop_event{};
     stop_event.events = EPOLLIN;
     stop_event.data.fd = this->stop_event_fd;
@@ -128,6 +132,7 @@ void EpollEchoServer::Server_Run(){
 
     epoll_event wait_events[kMaxEvents]{};
 
+    // epoll_wait()는 준비된 fd 목록을 돌려준다. fd 종류에 따라 accept/stop/recv로 분기한다.
     while(!this->stopping){
         int wait_result = epoll_wait(
             this->epoll_fd,
@@ -151,6 +156,7 @@ void EpollEchoServer::Server_Run(){
                 cout << "[EpollEchoServer] Stop event received on fd " << event_fd << endl;
                 this->stopping = true;
                 
+                // eventfd는 write된 값을 read해서 비워야 다음 이벤트 상태가 정리된다.
                 uint64_t stop_value = 1;
                 ssize_t read_result = read(this->stop_event_fd, &stop_value, sizeof(stop_value));
                 if(read_result < 0){
@@ -175,6 +181,7 @@ void EpollEchoServer::Server_Run(){
                 event_epoll.events = EPOLLIN;
                 event_epoll.data.fd = accept_result;
                 
+                // accept된 client fd도 epoll에 등록해야 이후 recv 이벤트를 받을 수 있다.
                 int add_ctl = epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, accept_result, &event_epoll);
                 if(add_ctl < 0){
                     perror("event add_ctl < 0");
@@ -204,6 +211,7 @@ void EpollEchoServer::Server_Run(){
                     continue;
                 }
                 else if(recv_result == 0){
+                    // recv()가 0을 반환하면 peer가 정상적으로 연결을 닫은 것이다.
                     cout << "[EpollEchoServer] Client disconnected: " << event_fd << endl;
                     this->DeleteClientFd(event_fd);
                     continue;
@@ -234,6 +242,7 @@ void EpollEchoServer::Stop(){
 
         cout << "[EpollEchoServer] Stop requested" << endl;
         this->stopping = true;
+        // fd 값만 복사해두고 실제 write는 lock 밖에서 수행한다.
         notify_fd = this->stop_event_fd;
     }
 
@@ -256,6 +265,7 @@ void EpollEchoServer::CleanUp(){
         this->cleaned_up = true;
 
         cout << "[EpollEchoServer] Cleanup started" << endl;
+        // fd들은 한 번만 닫아야 하므로 닫은 뒤 -1로 되돌린다.
         if(this->stop_event_fd >= 0){
             close(this->stop_event_fd);
             this->stop_event_fd = -1;
@@ -289,6 +299,7 @@ void EpollEchoServer::DeleteClientFd(int client_fd){
                 cout << "[EpollEchoServer] Client closed: " << client_fd << endl;
                 this->client_fds.erase(client_fd);
                 
+                // client fd를 닫기 전에 epoll 감시 목록에서도 제거한다.
                 int del_ctl = epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, client_fd, nullptr);
                 if(del_ctl < 0){
                     perror("event del del_ctl < 0");

@@ -26,11 +26,12 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 - v6~v7: native Windows IOCP 비교 학습 트랙 (Windows + Visual Studio 환경)
 
 ## 빌드 / 개발 환경
-- 빌드 시스템: CMake (Homebrew로 설치 완료). 현재 POSIX 소켓 코드는 macOS와
-  Linux/WSL2 환경에서 같은 `CMakeLists.txt`로 빌드한다.
+- 빌드 시스템: CMake (Homebrew로 설치 완료).
+- v1~v3의 POSIX/BSD 소켓 코드는 macOS와 Linux에서 같은 CMake 구조로 빌드한다.
+- v4~v5의 epoll 코드는 Linux 전용이므로 Docker/WSL2 같은 Linux 환경에서 빌드한다.
 - 에디터: 맥에서는 **VS Code**(CMake 확장) 사용. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 실행 불가 ("Visual Studio for Mac"은 단종 + C++용도 아니었음).
-- 이후 Windows로 넘어갈 때는 native Windows 빌드가 아니라 WSL2에서 같은 소스를 사용
-  (서버 배포 환경인 Linux와 같은 조건으로 개발하기 위함).
+- Windows에서는 v4~v5를 WSL2에서 개발하고, v6~v7은 native Windows + Visual Studio에서
+  IOCP를 직접 구현한다.
 
 ## 관련 문서
 - [basicdata/benchmark.md](basicdata/benchmark.md) — 버전별 성능 실측치

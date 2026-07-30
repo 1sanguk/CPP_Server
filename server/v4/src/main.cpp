@@ -5,6 +5,7 @@
 #include <pthread.h>
 
 int main(void){
+    // SIGINT/SIGTERM을 main thread가 sigwait()로 동기 처리해 서버 Stop() 경로를 보장한다.
     sigset_t stop_signals;
     sigemptyset(&stop_signals);
     sigaddset(&stop_signals, SIGINT);

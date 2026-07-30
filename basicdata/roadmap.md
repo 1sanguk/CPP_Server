@@ -63,7 +63,8 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ### v4 — epoll 기반 이벤트 루프 (단일 스레드 reactor)
 - **상태**: 완료
-- **목표**: I/O multiplexing으로 다수의 소켓을 논블로킹으로 처리, C10K 문제 체감.
+- **목표**: I/O multiplexing으로 여러 소켓을 하나의 이벤트 루프에서 감시하고,
+  readiness 기반 처리 흐름을 체감한다.
 - **구현 세부사항**:
   - `epoll_create1`, `epoll_ctl`, `epoll_wait` 사용
   - listen fd, client fd, `eventfd` 기반 stop fd를 하나의 이벤트 루프에서 분기 처리
