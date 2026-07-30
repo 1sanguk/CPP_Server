@@ -2,7 +2,7 @@
 
 int main(void){
     
-    ThreadPerConnectionEchoServer tpces = ThreadPerConnectionEchoServer(9000);
+    ThreadPerConnectionEchoServer tpces{9000};
 
     tpces.Server_Run();
 

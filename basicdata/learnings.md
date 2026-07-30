@@ -52,3 +52,30 @@
 - **signal handler에서 일반 C++ 동기화 코드를 직접 호출하면 안 된다.** mutex와
   condition variable 조작은 async-signal-safe하지 않으므로 SIGINT/SIGTERM을 막은 뒤
   main 스레드의 `sigwait()`에서 동기적으로 받아 `Stop()`을 호출했다.
+
+## v4 — Linux epoll 기반 단일 스레드 reactor
+
+- **fd는 현재 프로세스 안에서 열린 자원을 가리키는 번호이며, client fd는 임시 연결 id처럼
+  사용할 수 있다.** listen fd는 새 접속을 받는 문지기 소켓이고, client fd는 이미 연결된
+  클라이언트와 실제로 `recv()`/`send()`하는 소켓이다. 그래서 `event_fd == listen_fd`이면
+  `accept()`, 그 외 client fd이면 `recv()`로 분기한다.
+
+- **`epoll_wait()`는 “이번에 준비된 fd 목록”을 돌려준다.** listen fd에 새 접속이 남아 있는데
+  `accept()`로 소비하지 않으면 같은 listen 이벤트가 계속 발생하고, client fd에 읽을 데이터가
+  남아 있는데 `recv()`로 소비하지 않으면 같은 client 이벤트가 반복된다.
+
+- **`epoll_ctl()`의 첫 번째 인자는 감시자인 `epoll_fd`, 세 번째 인자는 감시 대상 fd다.**
+  client fd를 등록할 때 `epoll_ctl(client_fd, ...)`처럼 쓰면 `Invalid argument`가 발생한다.
+  올바른 의미는 `this->epoll_fd`의 감시 목록에 `client_fd`를 추가하는 것이다.
+
+- **`eventfd`는 `epoll_wait()`를 깨우기 위한 fd로 사용할 수 있다.** `stopping` 같은 메모리
+  변수만 바꿔서는 커널 안에서 잠든 `epoll_wait()`를 즉시 깨우지 못한다. `Stop()`이
+  `stop_event_fd`에 값을 write하면 epoll이 stop 이벤트를 돌려주고, 이벤트 루프는 값을
+  read한 뒤 종료한다.
+
+- **정리 함수는 여러 번 호출되어도 안전해야 한다.** `Server_Run()` 종료와 소멸자 경로에서
+  cleanup이 중복 호출될 수 있으므로 `cleaned_up` 플래그로 fd close와 로그가 한 번만
+  수행되도록 했다.
+
+- **Docker 컨테이너의 localhost와 macOS의 localhost는 다르다.** 컨테이너 안의 서버에
+  macOS 터미널에서 접속하려면 `docker run -p 9000:9000 ...`처럼 포트 매핑이 필요하다.

@@ -253,8 +253,54 @@
 
 ## v4 — epoll 기반 이벤트 루프
 
-구현 후 작성한다.
+### 완료 피드백 (2026-07-30)
+
+### 잘된 점
+
+- v3의 blocking worker 구조에서 벗어나, 하나의 Linux epoll 이벤트 루프가 listen fd,
+  client fd, stop event fd를 함께 감시하도록 구조를 바꿨다.
+- `event_fd == listen_fd`, `event_fd == stop_event_fd`, 그 외 client fd 분기로 fd 역할을
+  명확히 나누었다.
+- client fd를 `std::unordered_set<int>`로 추적하고, disconnect/error/send fail 시
+  epoll 감시 목록에서 제거한 뒤 close하도록 정리했다.
+- SIGINT/SIGTERM을 main 스레드의 `sigwait()`에서 받고, `eventfd` write로 `epoll_wait()`를
+  깨우는 graceful shutdown을 구현했다.
+- `Stop()`과 `CleanUp()`의 책임을 분리하고, cleanup 중복 호출을 막는 플래그를 추가했다.
+- Docker Ubuntu 24.04 환경에서 빌드와 host 포트 매핑 테스트를 수행해 Linux epoll 버전의
+  실제 실행 환경을 확인했다.
+
+### 보완하면 좋았을 점
+
+- `[의도적 유지]` 현재 client fd와 `SendAll()`은 blocking 동작을 전제로 한다.
+  - v4는 epoll의 readiness 이벤트 흐름을 익히는 버전이라 blocking send를 유지했다.
+  - 느린 client에 대한 `send()`가 오래 걸리면 단일 event loop 전체가 지연될 수 있다.
+  - **v5 또는 v4 확장 실험에서 해결할 문제:** client fd를 non-blocking으로 설정하고,
+    `EPOLLOUT`과 session별 send buffer를 도입한다.
+
+- `[의도적 유지]` level-triggered epoll만 사용했다.
+  - level-triggered는 학습 초기에 이벤트 반복 원인을 관찰하기 쉽고, accept/recv로 준비 상태를
+    소비해야 한다는 점을 확인하기 좋다.
+  - **추후 실험:** edge-triggered(`EPOLLET`)를 적용할 경우 non-blocking fd와 `EAGAIN`까지
+    반복해서 읽는 drain loop가 필요하다.
+
+- `[미적용]` 지속 부하 기준의 성능 측정이 아직 없다.
+  - 5개 동시 `nc` echo는 기능 검증에는 충분하지만, v2/v3와 성능을 비교하기에는 표본이 작다.
+  - 공통 부하 클라이언트를 만들어 동시 접속 수, 메시지 처리량, 평균/p95/p99 지연시간,
+    메모리 사용량을 같은 조건에서 측정하면 좋다.
+
+- `[미적용]` `Stop()`과 `CleanUp()`의 동시 호출 경계는 학습 단계 수준으로만 정리되어 있다.
+  - 현재 테스트에서는 정상 종료됐지만, 더 엄밀하게는 상태 전이를 `running/stopping/stopped`처럼
+    명확히 나누거나 fd 소유권을 RAII 객체로 감싸면 좋다.
+  - 지금은 코드 복잡도를 낮추기 위해 bool 플래그와 mutex로 관리한다.
 
 ## v5 — 이벤트 루프 + 워커 스레드 풀
+
+구현 후 작성한다.
+
+## v6 — Windows IOCP 기반 비동기 I/O 서버
+
+구현 후 작성한다.
+
+## v7 — IOCP + 워커/game logic queue 결합
 
 구현 후 작성한다.

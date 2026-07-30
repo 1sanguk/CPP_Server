@@ -50,3 +50,52 @@
   구조를 유지했다.
 - 배운 점: listener와 accepted socket의 플래그 상태를 플랫폼에서 당연히 분리해줄 것이라고
   가정하지 말고, 서버가 원하는 client socket 모드를 명시적으로 설정해야 한다.
+
+### [v4] macOS 에디터에서 epoll 관련 빨간줄 표시
+
+- 증상: `sys/epoll.h`, `epoll_event`, `epoll_ctl`, `epoll_wait`, `EPOLLIN` 등이 에디터에서
+  오류처럼 표시됐다.
+- 원인: v4는 Linux 전용 API인 epoll을 사용하지만, macOS 에디터의 IntelliSense는 macOS SDK
+  기준으로 분석해 Linux 헤더를 찾지 못했다.
+- 재현 방법: macOS에서 v4 소스를 열어 `sys/epoll.h` 포함부와 epoll API 사용부를 확인했다.
+- 해결: 실제 기준 빌드는 Docker Ubuntu 24.04 컨테이너로 잡고, macOS 에디터 빨간줄은
+  Linux 전용 버전의 분석 한계로 분리했다.
+- 배운 점: 소스 분석 환경과 실제 빌드/배포 타겟이 다르면 IDE 표시와 실제 컴파일 결과가
+  다를 수 있다.
+
+### [v4] epoll_wait 결과 배열 크기 오류
+
+- 증상: `epoll_wait()`에 `kMaxEvents = 64`를 넘겼지만 두 번째 인자로 `epoll_event` 하나의
+  주소만 넘겨 컴파일러가 buffer overflow 경고를 출력했다.
+- 원인: 등록용 `epoll_event` 하나와 `epoll_wait()` 결과를 받을 이벤트 배열의 역할을
+  구분하지 않았다.
+- 재현 방법: `epoll_event epollevent{}` 하나를 만들고 `epoll_wait(epoll_fd, &epollevent,
+  kMaxEvents, ...)` 형태로 빌드했다.
+- 해결: listen fd 등록용 `listen_event`와 결과 수신용 `wait_events[kMaxEvents]`를 분리했다.
+- 배운 점: `epoll_ctl()`은 이벤트 하나를 등록하지만, `epoll_wait()`는 준비된 이벤트 여러 개를
+  배열에 써준다.
+
+### [v4] accept/recv를 하지 않아 같은 fd 이벤트가 반복됨
+
+- 증상: 새 클라이언트 접속 후 `Wait_Events[0]: 3` 로그가 무한히 출력됐고, client fd 등록 후에는
+  `Wait_Events[0]: 5` 로그가 반복됐다.
+- 원인: level-triggered epoll에서는 준비 상태가 남아 있으면 같은 이벤트를 계속 돌려준다.
+  listen fd 이벤트는 `accept()`로 접속 큐를 소비해야 하고, client fd 이벤트는 `recv()`로
+  소켓 버퍼를 소비해야 한다.
+- 재현 방법: listen fd를 epoll에 등록한 뒤 `accept()` 없이 로그만 출력하거나, client fd를
+  등록한 뒤 `recv()` 없이 로그만 출력했다.
+- 해결: listen fd 이벤트에서는 `accept()`를 호출하고, client fd 이벤트에서는 `recv()`로
+  데이터를 읽도록 분기했다.
+- 배운 점: epoll은 이벤트를 “처리”해주지 않고 준비된 fd만 알려준다. 준비 상태를 소비하는
+  시스템 호출은 서버 코드가 직접 해야 한다.
+
+### [v4] Docker 컨테이너 서버에 macOS nc가 접속하지 못함
+
+- 증상: 컨테이너 안에서 v4 서버가 실행 중인데 macOS 터미널에서 `nc 127.0.0.1 9000` 접속이
+  되지 않았다.
+- 원인: 컨테이너의 `127.0.0.1`과 macOS host의 `127.0.0.1`은 다른 네트워크 네임스페이스다.
+- 재현 방법: `docker run --rm -it -v "$PWD":/workspace cpp-server-dev ./.../v4_server`로
+  서버를 실행한 뒤 host 터미널에서 `nc`로 접속했다.
+- 해결: 서버 실행 시 `-p 9000:9000` 옵션을 추가해 host 9000번 포트를 컨테이너 9000번 포트에
+  매핑했다.
+- 배운 점: Docker에서 외부 host 접속 테스트를 하려면 포트 매핑이 필요하다.

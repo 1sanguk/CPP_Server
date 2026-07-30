@@ -13,14 +13,17 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 1. **v1** — 싱글 스레드 blocking TCP 서버 (완료)
 2. **v2** — thread-per-connection (완료)
 3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료)
-4. **v4** — epoll 기반 이벤트 루프 (예정)
+4. **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 (완료)
 5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (예정)
+6. **v6** — Windows IOCP 기반 비동기 I/O 서버 (예정)
+7. **v7** — IOCP + 워커/game logic queue 결합 (예정)
 
 ## 타겟 플랫폼
 - **클라이언트**: Windows에서 플레이됨. 단, TCP/IP는 프로토콜 레벨이라 클라이언트 OS는 서버 코드에 영향을 주지 않음.
 - **서버 배포 환경**: Linux로 확정. 따라서 v4~v5의 Linux epoll 선택은 일반론이 아니라 실제 배포 타겟에 맞춘 것.
 - v1~v3: macOS(로컬)에서 바로 진행 (BSD 소켓 API, Linux에서도 동일하게 동작)
 - v4~v5: Linux epoll 타겟 (Docker/VM 환경 필요, 실제 배포 환경과 동일)
+- v6~v7: native Windows IOCP 비교 학습 트랙 (Windows + Visual Studio 환경)
 
 ## 빌드 / 개발 환경
 - 빌드 시스템: CMake (Homebrew로 설치 완료). 현재 POSIX 소켓 코드는 macOS와
@@ -47,5 +50,13 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
     초과 연결 8개 거부 확인
   - 활성 연결 6개 상태에서 `Ctrl+C` 종료 시 client 정리, worker/monitor join,
     `Stopping` 출력과 프로세스 종료 확인
-- [ ] **v4** — epoll 기반 이벤트 루프
+- [x] **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 구현 완료
+  - Docker Ubuntu 24.04 환경에서 `v4_server` 빌드 성공
+  - `epoll_create1()`/`epoll_ctl()`/`epoll_wait()`로 listen fd, client fd,
+    `eventfd` 기반 stop fd를 하나의 이벤트 루프에서 처리
+  - 5개 동시 `nc` 클라이언트 echo 성공
+  - `Ctrl+C` 시 SIGINT를 `sigwait()`로 받고 `eventfd`로 `epoll_wait()`를 깨워
+    client fd, listen fd, stop fd, epoll fd 정리 확인
 - [ ] **v5** — 이벤트 루프 + 워커 스레드 풀
+- [ ] **v6** — Windows IOCP 기반 비동기 I/O 서버
+- [ ] **v7** — IOCP + 워커/game logic queue
