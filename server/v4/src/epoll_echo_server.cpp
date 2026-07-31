@@ -38,13 +38,16 @@ void EpollEchoServer::Server_Run(){
         return;
     }
 
+    // Server_Run()은 Created 상태에서 한 번만 시작할 수 있다.
+    // compare_exchange로 Created -> Running 전이에 성공한 경우에만 서버 fd를 소유한다.
+    ServerState expected{ServerState::Created};
+    if(!this->server_state.compare_exchange_strong(expected, ServerState::Running)){
+        close(socket_result);
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lock(this->queue_mutex);
-        if(this->stopping){
-            close(socket_result);
-            return;
-        }
-        
         this->listen_fd = socket_result;
     }
 
@@ -60,7 +63,9 @@ void EpollEchoServer::Server_Run(){
 
     if(option_result < 0){
         perror("option_result < 0");
+        // socket 생성 후 멤버 fd를 소유한 상태의 실패 경로는 종료 상태로 전환한 뒤 즉시 정리한다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -74,7 +79,9 @@ void EpollEchoServer::Server_Run(){
     int bind_result = bind(this->listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     if(bind_result < 0){
         perror("bind_result < 0");
+        // bind 실패 시에도 listen_fd는 이미 열려 있으므로 cleanup 경로로 보낸다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -83,7 +90,9 @@ void EpollEchoServer::Server_Run(){
     int listen_result = listen(this->listen_fd, kBacklog);
     if(listen_result < 0){
         perror("listen_result < 0");
+        // listen 단계 이후 실패 경로는 Server_Run() 내부에서 바로 fd를 정리한다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -91,7 +100,9 @@ void EpollEchoServer::Server_Run(){
     int epoll_result = epoll_create1(0);
     if(epoll_result < 0){
         perror("epoll_result < 0");
+        // epoll 생성 전 실패지만 listen_fd는 열려 있으므로 cleanup이 필요하다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -104,7 +115,9 @@ void EpollEchoServer::Server_Run(){
     int listen_ctl = epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, this->listen_fd, &listen_event);
     if(listen_ctl < 0){
         perror("listen_ctl < 0");
+        // epoll_fd와 listen_fd를 모두 소유한 뒤의 실패이므로 cleanup으로 닫는다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -112,7 +125,9 @@ void EpollEchoServer::Server_Run(){
     int stop_fd_result = eventfd(0, EFD_NONBLOCK);
     if(stop_fd_result < 0){
         perror("stop_fd_result < 0");
+        // stop_event_fd 생성에는 실패했지만 listen_fd/epoll_fd는 정리해야 한다.
         this->Stop();
+        this->CleanUp();
         return;
     }
 
@@ -125,7 +140,9 @@ void EpollEchoServer::Server_Run(){
     int stop_ctl = epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, this->stop_event_fd, &stop_event);
     if(stop_ctl < 0){
         perror("stop_ctl < 0");
+        // stop_event_fd까지 생성된 뒤의 실패이므로 모든 서버 fd를 cleanup에서 정리한다.
         this->Stop();
+        this->CleanUp();
         return;
     }
     cout << "[EpollEchoServer] Stop event fd registered: " << this->stop_event_fd << endl;
@@ -133,7 +150,7 @@ void EpollEchoServer::Server_Run(){
     epoll_event wait_events[kMaxEvents]{};
 
     // epoll_wait()는 준비된 fd 목록을 돌려준다. fd 종류에 따라 accept/stop/recv로 분기한다.
-    while(!this->stopping){
+    while(this->server_state.load() == ServerState::Running){
         int wait_result = epoll_wait(
             this->epoll_fd,
             wait_events,
@@ -143,7 +160,9 @@ void EpollEchoServer::Server_Run(){
 
         if(wait_result < 0){
             perror("wait_result < 0");
+            // 이벤트 루프 실행 중 오류가 나면 종료 요청 후 같은 server thread에서 자원을 정리한다.
             this->Stop();
+            this->CleanUp();
             return;
         }
 
@@ -154,9 +173,8 @@ void EpollEchoServer::Server_Run(){
 
             if(event_fd == this->stop_event_fd){
                 cout << "[EpollEchoServer] Stop event received on fd " << event_fd << endl;
-                this->stopping = true;
                 
-                // eventfd는 write된 값을 read해서 비워야 다음 이벤트 상태가 정리된다.
+                // Stop()이 이미 Running -> Stopping으로 바꿨으므로 여기서는 eventfd만 비우고 루프를 빠져나간다.
                 uint64_t stop_value = 1;
                 ssize_t read_result = read(this->stop_event_fd, &stop_value, sizeof(stop_value));
                 if(read_result < 0){
@@ -236,12 +254,26 @@ void EpollEchoServer::Server_Run(){
 void EpollEchoServer::Stop(){
     int notify_fd = -1;
 
+    // 이미 종료 요청/정리/종료 완료 상태라면 중복으로 eventfd를 깨우지 않는다.
+    ServerState current_state = this->server_state.load();
+    if(current_state == ServerState::Stopping || 
+        current_state == ServerState::Cleaning ||
+        current_state == ServerState::Stopped) return;
+
+    // 정상 실행 중일 때만 Running -> Stopping 전이에 성공하고 epoll_wait()를 깨운다.
+    ServerState expected = ServerState::Running;
+    if(!this->server_state.compare_exchange_strong(expected, ServerState::Stopping)){
+        // 아직 Server_Run()이 시작되지 않은 Created 상태에서 Stop()이 호출되면 닫을 fd가 없으므로 Stopped로만 전환한다.
+        expected = ServerState::Created;
+        this->server_state.compare_exchange_strong(expected, ServerState::Stopped);
+
+        return;
+    }
+
+    cout << "[EpollEchoServer] Stop requested" << endl;
+
     {
         std::lock_guard<std::mutex> lock(this->queue_mutex); 
-        if(this->stopping) return;
-
-        cout << "[EpollEchoServer] Stop requested" << endl;
-        this->stopping = true;
         // fd 값만 복사해두고 실제 write는 lock 밖에서 수행한다.
         notify_fd = this->stop_event_fd;
     }
@@ -260,10 +292,12 @@ void EpollEchoServer::Stop(){
 void EpollEchoServer::CleanUp(){
     {
         std::lock_guard<std::mutex> lock(this->queue_mutex);
-        if(this->cleaned_up) return;
-        
-        this->cleaned_up = true;
+        ServerState expected = ServerState::Stopping;
 
+        // Stopping -> Cleaning 전이에 성공한 호출자만 fd 정리를 수행한다.
+        // 다른 경로에서 CleanUp()이 다시 호출되면 여기서 빠져나가 중복 close를 막는다.
+        if(!this->server_state.compare_exchange_strong(expected, ServerState::Cleaning)) return;
+        
         cout << "[EpollEchoServer] Cleanup started" << endl;
         // fd들은 한 번만 닫아야 하므로 닫은 뒤 -1로 되돌린다.
         if(this->stop_event_fd >= 0){
@@ -288,6 +322,8 @@ void EpollEchoServer::CleanUp(){
         }
 
         cout << "[EpollEchoServer] Cleanup finished" << endl;
+        // 모든 fd 정리가 끝난 뒤에야 Stopped로 표시한다.
+        this->server_state.store(ServerState::Stopped);
     }
 }
 

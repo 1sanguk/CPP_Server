@@ -283,15 +283,28 @@
   - **추후 실험:** edge-triggered(`EPOLLET`)를 적용할 경우 non-blocking fd와 `EAGAIN`까지
     반복해서 읽는 drain loop가 필요하다.
 
-- `[미적용]` 지속 부하 기준의 성능 측정이 아직 없다.
+- `[완료]` 지속 부하 기준의 성능 측정이 아직 없다.
   - 5개 동시 `nc` echo는 기능 검증에는 충분하지만, v2/v3와 성능을 비교하기에는 표본이 작다.
   - 공통 부하 클라이언트를 만들어 동시 접속 수, 메시지 처리량, 평균/p95/p99 지연시간,
     메모리 사용량을 같은 조건에서 측정하면 좋다.
+  - **보완 내용 (2026-07-31):** Docker Ubuntu 24.04 환경에서 `v4_server` 빌드 후,
+    50개 client가 각각 20개 메시지를 보내는 방식으로 총 1000개 echo 요청을 실행했다.
+    1000/1000 응답 성공, client accepted 50개, closed 50개, stop event 1개를 확인했다.
+    총 소요 시간은 3063ms였고 단순 계산 TPS는 약 326 echo/sec였다. 상세 디버그 로그가
+    활성화된 단일 실행 표본이므로 정밀 성능 결론이 아니라 v4 부하 회귀 확인용 수치로 기록한다.
+    평균/p95/p99 지연시간과 메모리 사용량은 아직 별도 측정하지 않았다.
 
-- `[미적용]` `Stop()`과 `CleanUp()`의 동시 호출 경계는 학습 단계 수준으로만 정리되어 있다.
+- `[완료]` `Stop()`과 `CleanUp()`의 동시 호출 경계는 학습 단계 수준으로만 정리되어 있다.
   - 현재 테스트에서는 정상 종료됐지만, 더 엄밀하게는 상태 전이를 `running/stopping/stopped`처럼
     명확히 나누거나 fd 소유권을 RAII 객체로 감싸면 좋다.
-  - 지금은 코드 복잡도를 낮추기 위해 bool 플래그와 mutex로 관리한다.
+  - 기존에는 코드 복잡도를 낮추기 위해 bool 플래그와 mutex로 관리했다.
+  - **보완 내용 (2026-08-01):** `Created -> Running -> Stopping -> Cleaning -> Stopped`
+    흐름의 `ServerState` enum을 추가하고 `std::atomic<ServerState>`로 서버 생명주기를
+    관리하도록 변경했다. `Server_Run()`은 `Created -> Running`, `Stop()`은
+    `Running -> Stopping`, `CleanUp()`은 `Stopping -> Cleaning -> Stopped` 전이를
+    `compare_exchange_strong()`과 `store()`로 처리해 중복 종료 요청과 중복 fd 정리를
+    더 명확히 구분했다. Docker Ubuntu 환경에서 `v4_server` 빌드와 기본 `nc` echo 테스트,
+    SIGINT 종료 흐름을 확인했다.
 
 ## v5 — 이벤트 루프 + 워커 스레드 풀
 
