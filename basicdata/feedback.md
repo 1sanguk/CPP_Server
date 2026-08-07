@@ -308,7 +308,98 @@
 
 ## v5 — 이벤트 루프 + 워커 스레드 풀
 
-구현 후 작성한다.
+### 완료 피드백 (2026-08-07)
+
+### 잘된 점
+
+- v3의 고정 워커 풀과 v4의 epoll reactor를 결합해서, reactor는 accept/recv와
+  `EPOLLOUT` 기반 송신만 담당하고 워커는 job queue에서 받은 데이터를 세션별
+  송신 버퍼에 적재하는 역할로 분리했다.
+- client fd를 non-blocking으로 설정하고 `EPOLLOUT` + 세션별 송신 버퍼(`send_buffers`)를
+  도입해, v4 피드백에서 v5 과제로 남겨뒀던 "client fd non-blocking + EPOLLOUT + 세션별
+  송신 버퍼"를 그대로 구현했다.
+- `Send_All()`을 `bool` 대신 `SendState`(Completed/Partial/Failed) enum으로 재설계해서
+  non-blocking 소켓의 `EAGAIN`(아직 다 못 보냄)과 진짜 에러를 구분하고, 못다 보낸 만큼만
+  세션 버퍼에 남기도록 만들었다.
+- 워커(`Process_Job`)는 세션 버퍼에 append하고 `epoll_ctl(EPOLL_CTL_MOD)`로 `EPOLLOUT`
+  관심만 등록하며, 실제 `send()`는 reactor의 `EPOLLOUT` 핸들러가 전담하도록 분리해
+  "reactor는 I/O만 담당" 설계를 지켰다.
+- 코드 리뷰 과정에서 실제 버그를 여러 개 찾아 수정했다:
+  - `Delete_Client_Fd()`에서 `epoll_ctl(EPOLL_CTL_DEL)`과 `close()`가 client_fds 정리,
+    send_buffers 정리 각각에서 중복 호출되던 이중 close 버그. fd가 재사용된 경우 엉뚱한
+    연결을 끊을 수 있었는데, "실제로 찾아서 지웠는지" 상태를 하나로 모아 정리는 한 번만
+    실행하도록 수정했다.
+  - `Process_Job()`과 reactor의 `EPOLLOUT` `Failed` 분기 두 곳에서 `send_mutex`를 쥔 채로
+    `Delete_Client_Fd()`를 호출해 같은 뮤텍스를 다시 잠그려던 데드락을 발견해, 플래그로
+    락 스코프 밖으로 빼서 해결했다.
+  - `Send_All()`의 `EAGAIN` 처리에서 `data.erase(total_sent)`가 보낸 부분을 남기고 못
+    보낸 부분을 지우는 반대 동작 버그, `SendState::Partial`이 선언만 되고 실제로는
+    리턴되지 않던 버그를 발견해 수정했다.
+- worker/monitor 스레드를 실제로 생성하고 `Clean_Up()`에서 join하도록 완성했다.
+  `Monitor_Workers()`는 v3와 동일하게 `wait_for()` + 종료 predicate로 구현해, 정상
+  종료 시 30초 대기 없이 즉시 반응하도록 만들었다.
+- 빌드(`-Wall -Wextra` 경고 없음), 단일/동시 접속 echo, `SIGTERM` graceful shutdown을
+  실제로 실행해 확인했다.
+- 부하 테스트: v4와 동일 시나리오(50 clients × 20 msg)에서 1000/1000 성공, 2000 clients
+  × 20 msg(총 40,000 echo) 순간 부하에서도 40000/40000 성공, 300 clients를 30초 이상에
+  걸쳐 천천히 늘리는 지속 부하에서도 3000/3000 성공했다.
+- `top -H`로 스레드별 CPU를 측정해 job queue 자체는 병목이 아니며(대부분 `Queued: 0`),
+  reactor 스레드 하나가 모든 I/O를 처리하는 구조가 실제 병목이라는 걸 확인했다 — v5가
+  의도한 설계("reactor는 I/O만 담당")의 당연한 한계다.
+- AddressSanitizer + LeakSanitizer로 120개 연결, 1800개 echo 규모의 반복 연결/해제
+  부하 후 정상 종료까지 확인했고, 메모리 누수나 메모리 안전성 에러는 발견되지 않았다.
+
+### 보완하면 좋았을 점
+
+- `[완료]` 여러 스레드(reactor, 워커, monitor)가 동시에 `std::cout`에 출력하면 로그가
+  섞일 수 있다는 문제는 v2에서 이미 `[의도적 유지]`로 남겨뒀었다. v5에서는 동시성 규모가
+  커지면서(300개 동시 접속 부하 테스트) 단순히 줄이 섞이는 수준을 넘어 `Sending to client`
+  로그의 fd 값 자체가 `6281472909701472`처럼 깨진 숫자로 출력되는 것까지 실제로 확인됐다.
+  - **보완 내용 (2026-08-07):** 로그 전용 `log_mutex`와 `Logging()` 함수를 추가해, 모든
+    출력이 이 함수 하나만 거치도록 통일했다. 호출부는 `std::ostringstream`으로 한 줄
+    전체를 완성한 뒤 `Logging()`을 한 번만 호출해서, 한 줄 안에서 출력이 여러 스레드로
+    쪼개지는 일이 없게 했다(`Send_All()`처럼 원래 `cout` 호출이 여러 번 나뉘어 있던 로그도
+    포함). 내부 구현은 `printf("%s\n", msg.c_str())`를 쓰는데, 처음엔 `printf(msg.c_str())`
+    형태로 하려다가 클라이언트가 보낸 데이터가 그대로 로그 메시지에 섞여 들어가는 경우
+    (`Sending to client`) 그 데이터가 포맷 문자열로 해석되는 format string 취약점이 될
+    수 있어서, 포맷 문자열은 `"%s\n"`으로 고정하고 실제 메시지는 인자로만 넘기도록
+    수정했다. `v5_server` 빌드 성공, 로그가 깨졌던 것과 같은 2000개 동시 접속 부하
+    (40000/40000 echo 성공) 재현 테스트에서 로그 손상이 더 이상 발생하지 않는 것을
+    확인했다.
+
+- `[완료]` 같은 커넥션에서 온 job이 서로 다른 워커에 분산 처리될 수 있어서, 클라이언트가
+  응답을 기다리지 않고 메시지를 연달아 보내는 경우(pipelining) 세션 버퍼에 append되는
+  순서가 원래 보낸 순서와 뒤바뀔 수 있다. 지금 echo 테스트 클라이언트는 항상 요청-응답을
+  기다리는 패턴이라 3000개 요청 부하 테스트에서도 재현되지 않았지만, 구조적으로는 남아있는
+  문제였다.
+  - **보완 내용 (2026-08-07):** 전역 job queue 하나를 워커별 큐(`Worker` 구조체 —
+    뮤텍스+큐+조건변수 묶음)로 나누고, `Enqueue_Job()`이 `client_fd % 워커 수`로 항상
+    같은 워커에 라우팅하도록 sticky routing을 구현했다. `Stop()`은 워커별 조건변수를
+    모두 `notify_all()`하도록, `Monitor_Workers()`는 모니터 전용 뮤텍스/조건변수를 새로
+    만들어 특정 워커의 job 알림과 얽히지 않게 분리하고 워커별 큐 길이를 각자의 뮤텍스로
+    보호하며 합산하도록 바꿨다. `v5_server` 빌드 성공, 50 clients×20 msg(1000/1000)와
+    300 clients 지속 부하(1500/1500) 회귀 테스트, `Worker Status` 로그 정상 출력,
+    `SIGTERM` graceful shutdown까지 확인했다.
+
+- `[완료]` `Clean_Up()`은 종료 시 세션 버퍼에 아직 다 못 보낸 데이터가 남아있어도
+  그냥 `close()`로 끊어버린다. 부하 테스트 중 서버 종료 타이밍이 마지막 메시지 처리와
+  겹치면 클라이언트가 응답을 못 받고 연결이 끊기는 걸 실제로 재현했다(테스트 하네스의
+  `timeout` 값이 실제 소요 시간과 너무 가까워서 우연히 드러났다).
+  - **보완 내용 (2026-08-07):** `client_fds`를 닫기 전에 그 fd의 `send_buffers`에 남은
+    데이터가 있으면 `Send_All()`을 한 번 더 시도해 최선 노력(best-effort)으로 flush하도록
+    바꿨다. non-blocking 소켓이라 커널 송신 버퍼가 꽉 차 있으면 그래도 그냥 닫지만,
+    대부분의 경우(작은 echo 메시지 수준) 이 한 번의 시도로 충분히 다 보내진다. 버그를
+    처음 재현했던 것과 같은 조건(서버 `timeout` 45초, 300 clients를 100ms 간격으로 30초
+    이상 늘리는 지속 부하)을 그대로 다시 돌려서 이번엔 3000/3000 전부 성공하는 것을
+    확인했다. 2000 clients × 20 msg(40,000 echo) 부하로도 회귀 테스트해 40000/40000
+    성공과 정상 종료를 확인했다.
+
+- `[완료]` `Clean_Up()`에서 `send_buffers` 정리가 `active_client_mutex` 블록 안에서
+  이뤄지고 있다. `send_buffers`는 원래 `send_mutex`로 보호하기로 한 멤버라, 이 시점엔
+  워커/모니터가 이미 join된 뒤라 실질적인 race는 없지만 "이 멤버는 이 뮤텍스가 보호한다"는
+  원칙과는 어긋난다.
+  - **보완 내용 (2026-08-07):** `send_buffers` 정리를 `active_client_mutex` 블록에서
+    분리해 `send_mutex`로 보호하는 별도 블록으로 옮겼다. `v5_server` 빌드 성공을 확인했다.
 
 ## v6 — Windows IOCP 기반 비동기 I/O 서버
 

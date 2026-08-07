@@ -14,7 +14,7 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 2. **v2** — thread-per-connection (완료)
 3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료)
 4. **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 (완료)
-5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (예정)
+5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (완료)
 6. **v6** — Windows IOCP 기반 비동기 I/O 서버 (예정)
 7. **v7** — IOCP + 워커/game logic queue 결합 (예정)
 
@@ -42,8 +42,10 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 ## 현재 상태
 - [x] **v1** — blocking socket 흐름, partial send, `EINTR`, 길이 기반 로그,
   `SO_REUSEADDR`까지 구현 및 echo 회귀 테스트 완료
+
 - [x] **v2** — thread-per-connection, 활성 client 목록의 mutex 보호, 동시 접속과
   fd 정리 테스트 완료
+
 - [x] **v3** — 고정 worker 4개, 최대 128개의 bounded queue, condition variable,
   worker monitor, SIGINT/SIGTERM graceful shutdown 구현 완료
   - 동시 echo 50개 요청 50/50 성공
@@ -51,6 +53,7 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
     초과 연결 8개 거부 확인
   - 활성 연결 6개 상태에서 `Ctrl+C` 종료 시 client 정리, worker/monitor join,
     `Stopping` 출력과 프로세스 종료 확인
+
 - [x] **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 구현 완료
   - Docker Ubuntu 24.04 환경에서 `v4_server` 빌드 성공
   - `epoll_create1()`/`epoll_ctl()`/`epoll_wait()`로 listen fd, client fd,
@@ -58,6 +61,24 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
   - 5개 동시 `nc` 클라이언트 echo 성공
   - `Ctrl+C` 시 SIGINT를 `sigwait()`로 받고 `eventfd`로 `epoll_wait()`를 깨워
     client fd, listen fd, stop fd, epoll fd 정리 확인
-- [ ] **v5** — 이벤트 루프 + 워커 스레드 풀
+
+- [x] **v5** — 이벤트 루프 + 워커 스레드 풀 결합 구현 완료
+  - reactor(epoll 루프)는 I/O(recv/send)만 담당, 워커는 job queue로 받은 데이터를
+    세션별 송신 버퍼에 적재하고 `EPOLLOUT`으로 reactor에게 송신을 넘김
+  - client fd non-blocking + `EPOLLOUT` + 세션별 송신 버퍼, `Send_All()`의
+    Completed/Partial/Failed 상태 구분, 같은 커넥션의 job을 항상 같은 워커로
+    보내는 sticky routing, 뮤텍스로 보호된 단일 로그 출력 지점, 종료 시 pending
+    데이터 best-effort flush까지 구현
+  - v4와 동일 시나리오(50 clients × 20 msg)에서 1000/1000, 2000 clients × 20 msg
+    (총 40,000 echo) 순간 부하에서 40000/40000, 300 clients 지속 부하에서 3000/3000
+    echo 성공
+  - `top -H` 스레드별 CPU 측정으로 job queue가 아니라 reactor 스레드 하나가
+    병목이라는 것을 확인
+  - AddressSanitizer + LeakSanitizer로 반복 연결/해제 부하 후 메모리 누수 없음 확인
+  - 리뷰 과정에서 발견한 버그와 회고는 [basicdata/feedback.md](basicdata/feedback.md),
+    구체적인 버그 재현/수정은 [basicdata/troubleshooting.md](basicdata/troubleshooting.md)의
+    v5 항목 참고
+
 - [ ] **v6** — Windows IOCP 기반 비동기 I/O 서버
+
 - [ ] **v7** — IOCP + 워커/game logic queue

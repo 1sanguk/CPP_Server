@@ -85,15 +85,39 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
     cleanup 로그 확인
 
 ### v5 — 이벤트 루프 + 워커 스레드 풀 결합
+- **상태**: 완료
 - **목표**: 실제 상용 MMO 서버에 가까운 구조 (reactor가 I/O만 담당, 워커 스레드가 게임 로직 처리).
 - **구현 세부사항**:
   - reactor(epoll 루프)는 I/O(수신/송신)만 담당, 파싱된 요청을 job queue로 워커 스레드 풀에 전달
   - v3의 thread pool 구조 재사용, v4의 이벤트 루프와 결합
+  - client fd를 non-blocking으로 설정하고 `EPOLLOUT` + 세션별 송신 버퍼(`send_buffers`)를
+    도입해, 워커는 버퍼에 데이터를 쌓고 `EPOLLOUT` 등록만 하며 실제 `send()`는 reactor가
+    전담하도록 분리
+  - `Send_All()`을 `bool` 대신 `SendState`(Completed/Partial/Failed) enum으로 재설계해
+    non-blocking 소켓의 `EAGAIN`과 진짜 에러를 구분
+  - 같은 커넥션의 job이 여러 워커에 흩어져 처리 순서가 뒤바뀌는 걸 막기 위해, 워커별로
+    큐/뮤텍스/조건변수를 따로 두고 `client_fd % 워커 수`로 항상 같은 워커에 라우팅하는
+    sticky routing 적용
+  - 여러 스레드(reactor/워커/monitor)가 동시에 로그를 찍어도 한 줄이 섞이거나 깨지지
+    않도록 뮤텍스로 보호된 `Logging()` 단일 출력 지점으로 통일
+  - `Clean_Up()`이 종료 시 각 client fd를 닫기 전에 남은 세션 송신 버퍼를 `Send_All()`로
+    한 번 더 flush 시도(best-effort)하도록 해서, 종료 타이밍이 마지막 메시지 전송과
+    겹쳐도 데이터가 유실되지 않게 함
   - 이후 실제 게임 로직(예: 좌표 이동, 채팅 브로드캐스트) 붙이기 실험 가능
 - **테스트/QA**:
-  - 종합 부하 테스트: 동시 접속 수 + 초당 메시지 처리량(TPS) 측정
-  - I/O 스레드와 워커 스레드 간 job queue 병목 여부 확인 (큐 길이 모니터링)
-  - 장시간 실행 시 메모리 누수 여부 확인 (`valgrind` 또는 `AddressSanitizer`)
+  - `v5_server` 빌드(`-Wall -Wextra` 경고 없음), 단일/동시 접속 echo, `SIGTERM` graceful
+    shutdown 확인
+  - 종합 부하 테스트: v4와 동일 시나리오(50 clients × 20 msg)에서 1000/1000 성공,
+    2000 clients × 20 msg(총 40,000 echo) 순간 부하에서 40000/40000 성공, 300 clients를
+    30초 이상에 걸쳐 늘리는 지속 부하에서 3000/3000 성공
+  - I/O 스레드와 워커 스레드 간 job queue 병목 여부: `top -H`로 스레드별 CPU를 측정한 결과
+    job queue 자체는 병목이 아니었고(`Monitor_Workers` 로그가 대부분 `Queued: 0`), reactor
+    스레드 하나가 모든 I/O를 처리하는 구조가 실제 병목이라는 걸 확인
+  - 장시간 실행 메모리 누수: `valgrind`가 없는 환경이라 AddressSanitizer + LeakSanitizer로
+    대체. 120개 연결·1,800개 echo 규모의 반복 연결/해제 부하 후 정상 종료까지 확인했고
+    메모리 누수·메모리 안전성 에러는 발견되지 않음
+  - 완료 결과: 자세한 회고와 발견된 버그 목록은 [basicdata/feedback.md](feedback.md)의
+    v5 항목 참고
 
 ### v6 — Windows IOCP 기반 비동기 I/O 서버
 
@@ -167,6 +191,6 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 - [x] v2 — thread-per-connection
 - [x] v3 — 고정 크기 thread pool + 작업 큐
 - [x] v4 — epoll 기반 이벤트 루프
-- [ ] v5 — 이벤트 루프 + 워커 스레드 풀 결합
+- [x] v5 — 이벤트 루프 + 워커 스레드 풀 결합
 - [ ] v6 — Windows IOCP 기반 비동기 I/O 서버
 - [ ] v7 — IOCP + 워커/game logic queue 결합
