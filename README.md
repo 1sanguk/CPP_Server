@@ -10,13 +10,29 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 버전별 상세 계획은 [basicdata/roadmap.md](basicdata/roadmap.md) 참고.
 
 ## 버전 개요
-1. **v1** — 싱글 스레드 blocking TCP 서버 (완료)
-2. **v2** — thread-per-connection (완료)
-3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료)
-4. **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 (완료)
-5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (완료)
-6. **v6** — Windows IOCP 기반 비동기 I/O 서버 (예정)
+각 버전의 아키텍처 다이어그램과 구현 포인트는 버전별 README를 참고.
+
+1. **v1** — 싱글 스레드 blocking TCP 서버 (완료) → [server/v1/README.md](server/v1/README.md)
+2. **v2** — thread-per-connection (완료) → [server/v2/README.md](server/v2/README.md)
+3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료) → [server/v3/README.md](server/v3/README.md)
+4. **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 (완료) → [server/v4/README.md](server/v4/README.md)
+5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (완료) → [server/v5/README.md](server/v5/README.md)
+6. **v6** — Windows IOCP 기반 비동기 I/O 서버 (완료) → [server/v6/README.md](server/v6/README.md)
 7. **v7** — IOCP + 워커/game logic queue 결합 (예정)
+
+## 구조 발전 한눈에 보기
+
+각 버전은 이전 버전에서 확인한 한계를 다음 버전의 학습 주제로 가져간다.
+
+```mermaid
+flowchart LR
+    V1["v1<br/>단일 blocking"] -->|"동시 접속"| V2["v2<br/>접속당 thread"]
+    V2 -->|"thread 수 제한"| V3["v3<br/>고정 thread pool"]
+    V3 -->|"worker blocking 제거"| V4["v4<br/>단일 epoll reactor"]
+    V4 -->|"non-blocking 송신과 작업 분리"| V5["v5<br/>reactor + job workers"]
+    V5 -. "Windows 비교 트랙" .-> V6["v6<br/>IOCP completion"]
+    V6 -->|"게임 로직 분리"| V7["v7<br/>IOCP + logic queue"]
+```
 
 ## 타겟 플랫폼
 - **클라이언트**: Windows에서 플레이됨. 단, TCP/IP는 프로토콜 레벨이라 클라이언트 OS는 서버 코드에 영향을 주지 않음.
@@ -26,12 +42,13 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
 - v6~v7: native Windows IOCP 비교 학습 트랙 (Windows + Visual Studio 환경)
 
 ## 빌드 / 개발 환경
-- 빌드 시스템: CMake (Homebrew로 설치 완료).
+- 빌드 시스템: CMake.
 - v1~v3의 POSIX/BSD 소켓 코드는 macOS와 Linux에서 같은 CMake 구조로 빌드한다.
 - v4~v5의 epoll 코드는 Linux 전용이므로 Docker/WSL2 같은 Linux 환경에서 빌드한다.
 - 에디터: 맥에서는 **VS Code**(CMake 확장) 사용. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 실행 불가 ("Visual Studio for Mac"은 단종 + C++용도 아니었음).
 - Windows에서는 v4~v5를 WSL2에서 개발하고, v6~v7은 native Windows + Visual Studio에서
   IOCP를 직접 구현한다.
+- v6는 MSVC C++20, `/W4`, `/utf-8` 설정으로 빌드하며 Winsock2 라이브러리를 연결한다.
 
 ## 관련 문서
 - [basicdata/benchmark.md](basicdata/benchmark.md) — 버전별 성능 실측치
@@ -79,6 +96,15 @@ C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단
     구체적인 버그 재현/수정은 [basicdata/troubleshooting.md](basicdata/troubleshooting.md)의
     v5 항목 참고
 
-- [ ] **v6** — Windows IOCP 기반 비동기 I/O 서버
+- [x] **v6** — Windows IOCP 기반 비동기 I/O 서버 완료
+  - `AcceptEx()` 16개를 선게시하고, 세션과 Accept/Recv/Send 작업별 context를 분리해
+    `WSARecv()`/`WSASend()` completion으로 echo를 처리
+  - 세션별 순서 보장 송신 큐, Recv/Send 동시 진행, partial send continuation,
+    pending I/O 주기 진단·drain 후 worker join까지 구현
+  - `CONTAINING_RECORD`로 작업 context를 복원하고, `Info`/`Debug`/`Error` 로그 레벨과
+    mutex 기반 단일 로그 출력 지점을 적용
+  - native Windows 일반 빌드에서 200 clients × 10 msg(2000/2000), MSVC AddressSanitizer
+    빌드에서 50 clients × 20 msg(1000/1000), 강제 부분 전송 4 MiB echo 성공
+  - 상세 구조, 빌드 명령과 부분 전송 테스트 방법은 [v6 README](server/v6/README.md) 참고
 
 - [ ] **v7** — IOCP + 워커/game logic queue

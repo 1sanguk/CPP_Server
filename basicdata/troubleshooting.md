@@ -165,3 +165,37 @@
   데이터를 `Send_All()`로 한 번 더 flush 시도하도록 고쳤다. 버그를 처음 재현했던 것과
   같은 조건(서버 `timeout` 45초, 300 clients 지속 부하)으로 다시 테스트하니 3000/3000
   전부 성공했다 (feedback.md에 `[완료]`로 갱신).
+
+---
+
+### [v6]
+
+#### 정상 `AcceptEx` 완료를 0바이트 연결 종료로 처리함
+
+- 증상: client가 연결되면 Accept 후속 처리에 들어가지 못하고 context가 닫힐 수 있었다.
+- 원인: I/O 타입을 확인하기 전에 `byte_transferred == 0`을 모든 completion의 연결 종료로
+  처리했다. 초기 수신 길이가 0인 `AcceptEx()`의 정상 완료도 0바이트다.
+- 해결: 실패 completion을 먼저 처리하고, `Recv` 타입이면서 0바이트인 경우에만 정상 연결
+  종료로 분기했다. `Accept`의 0바이트 completion은 IOCP 등록과 최초 Recv 게시로 이어진다.
+- 확인: 단일 반복 echo 20/20과 다중 client echo 1000/1000 성공을 확인했다.
+
+#### partial send 후 다음 Recv의 버퍼 시작 주소를 복구하지 않음
+
+- 증상: partial send가 발생해 `WSABUF.buf`가 앞으로 이동한 뒤 다음 Recv가 버퍼 중간에서
+  전체 크기만큼 수신을 시도해 범위를 벗어날 가능성이 있었다.
+- 원인: Send 완료 후 `WSABUF.len`만 복구하고 `buf`를 원래 배열 시작점으로 되돌리지 않았다.
+- 해결: 세션별 송신 큐의 offset으로 남은 범위를 관리하고, 각 Send에 별도 context와
+  `OVERLAPPED`를 사용하도록 변경했다.
+- 확인: `V6_FORCE_PARTIAL_SEND_TEST` 빌드에서 한 번의 `WSASend()` 요청을 1 KiB로 제한했다.
+  느린 수신 client의 4 MiB echo가 완전히 일치했고 send continuation 4,032회를 확인했다.
+
+#### pending I/O보다 worker와 context를 먼저 정리함
+
+- 증상: 서버 종료 시 worker와 IOCP를 먼저 종료한 뒤 pending I/O가 참조하는 context를 직접
+  삭제해 use-after-free가 발생할 수 있었다.
+- 원인: socket 취소, completion 회수, context 삭제의 순서가 보장되지 않았다.
+- 해결: 종료 상태에서 후속 I/O 게시를 막고, 모든 context socket을 닫아 pending 작업을
+  취소한 뒤 condition variable로 context 목록이 빌 때까지 기다린다. 이후 null completion
+  패킷으로 worker를 종료하고 IOCP handle을 닫는다.
+- 확인: pending `WSARecv()`가 있는 상태에서 일반 빌드와 AddressSanitizer 빌드를 종료해
+  completion drain, 모든 worker join, 종료 코드 0과 sanitizer 오류 없음을 확인했다.

@@ -403,7 +403,63 @@
 
 ## v6 — Windows IOCP 기반 비동기 I/O 서버
 
-구현 후 작성한다.
+### 잘된 점
+
+- `AcceptEx()`를 listen socket의 IOCP completion으로 처리하고, 완료된 client socket을 같은
+  completion port에 연결한 뒤 다음 accept를 게시하는 흐름을 구현했다.
+- 세션과 작업별 context를 분리하고 세션별 송신 큐로 순서를 보장해, 한 연결의 Recv와 Send가
+  동시에 진행되면서도 각 pending I/O의 상태와 수명이 독립적으로 유지된다.
+- partial send에서는 송신 큐 offset과 남은 길이를 갱신해 continuation을 게시한다.
+- `AcceptEx`의 정상 0바이트 완료와 Recv의 0바이트 연결 종료를 I/O 타입으로 구분했다.
+- 종료 시 pending I/O보다 context가 먼저 파괴되지 않도록 socket 취소 → completion drain →
+  context 목록 empty → worker 종료 패킷 → join → IOCP 정리 순서를 적용했다.
+- 고정 10개였던 worker 기준을 논리 코어 수로 통일하고, 미사용 `Register_Client()` 경로와
+  Winsock 관련 컴파일 경고를 정리했다.
+- 일반 빌드 2000/2000 echo와 pending receive 종료, MSVC AddressSanitizer 빌드 1000/1000 echo,
+  강제 부분 전송 4 MiB echo와 같은 종료 시나리오를 통과했다.
+
+### 보완하면 좋았을 점
+
+- `[완료]` context 하나에 `OVERLAPPED` 하나를 두고 Recv와 Send를 번갈아 게시하므로
+  한 세션에서 수신과 송신을 동시에 진행할 수 없다.
+  - v6에서는 completion 모델과 context 수명을 익히기 위해 단순한 직렬 echo 흐름을 유지한다.
+  - v7에서 세션 객체와 I/O 작업별 context를 분리할 때 참조 수명과 처리 순서를 다시 설계한다.
+  - **보완 내용 (2026-08-14):** socket과 송신 큐를 소유하는 `ClientSession`과 Accept/Recv/Send별
+    `IoContext`를 분리했다. Recv 완료 직후 다음 Recv를 게시하고 받은 데이터는 세션별 송신 큐에서
+    순서대로 처리해, 한 세션의 수신과 송신이 동시에 진행될 수 있도록 변경했다.
+
+- `[완료]` 동시에 pending인 `AcceptEx()`가 하나뿐이라 짧은 시간에 접속이 몰리면 accept
+  처리량이 제한될 수 있다.
+  - 여러 accept context를 미리 게시하면 접속 폭주 대응이 좋아지지만 context 수명과 종료 시
+    취소해야 할 작업 수가 늘어난다.
+  - **보완 내용 (2026-08-14):** 서버 시작 시 Accept context 16개를 미리 게시하고, 각 완료 시
+    대체 Accept를 다시 게시하도록 변경했다. 200개 동시 연결에서 2,000/2,000 echo 성공을 확인했다.
+
+- `[완료]` `OVERLAPPED*`를 `IoContext*`로 직접 변환하는 방식은 `overlapped`가 구조체의 첫
+  멤버라는 배치에 의존한다.
+  - 작업별 context를 도입할 때 `CONTAINING_RECORD`와 명시적인 base/owner 관계를 비교할 수 있다.
+  - **보완 내용 (2026-08-17):** worker에서 `CONTAINING_RECORD`로 소유 `IoContext`를 찾도록
+    변경했다. `overlapped`를 구조체 마지막 멤버로 옮겨 첫 멤버 배치에 의존하지 않음도 확인했다.
+
+- `[완료]` 종료 시 `context_set.empty()`를 제한 없이 기다리므로, 운영 환경에서는 예상하지
+  못한 completion 누락을 진단할 timeout과 남은 context 로그가 필요하다.
+  - context를 안전하게 임의 삭제할 수는 없으므로 timeout은 강제 삭제보다 장애 진단과 프로세스
+    종료 정책을 결정하는 용도로 사용하는 편이 안전하다.
+  - **보완 내용 (2026-08-17):** 안전한 completion drain 자체는 유지하면서 5초마다 남은 pending
+    context 수를 출력하는 진단 대기를 추가했다. 부하 및 ASan 테스트에서 모두 drain과 정상 종료를 확인했다.
+
+- `[완료]` 연결 단위 상세 로그는 부하가 커질수록 로그 mutex와 콘솔 출력이 처리량 측정을
+  왜곡할 수 있다. 실제 벤치마크에서는 로그 레벨을 낮추고 TPS, 평균/p95/p99 지연시간과 메모리를
+  별도로 측정해야 한다.
+  - **보완 내용 (2026-08-17):** `Debug`, `Info`, `Error` 로그 레벨을 추가하고 기본값을 `Info`로
+    설정했다. 연결 단위 종료 로그는 `Debug`로 낮춰 일반 부하 검증에서 콘솔 출력량을 줄였다.
+
+- `[완료]` 로컬 회귀 테스트에서는 partial send 자체를 강제로 발생시키지 못했다. 작은 socket
+  send buffer, 큰 payload, 느린 수신 client를 사용하는 별도 시나리오가 필요하다.
+  - **보완 내용 (2026-08-17):** `V6_FORCE_PARTIAL_SEND_TEST` CMake 옵션을 추가해 한 번의 실제
+    `WSASend()` 요청 크기를 1 KiB로 제한하고, 논리적 송신 길이가 남으면 continuation 경로를
+    반복하도록 했다. 느린 수신 client의 4 MiB payload가 완전히 일치했고 continuation 4,032회를
+    확인했다.
 
 ## v7 — IOCP + 워커/game logic queue 결합
 

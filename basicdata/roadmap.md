@@ -121,6 +121,7 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ### v6 — Windows IOCP 기반 비동기 I/O 서버
 
+- **상태**: 완료
 - **목표**: Windows의 completion-based 비동기 I/O 모델을 익히고 Linux `epoll`의
   readiness 모델과 차이를 비교한다.
 - **실행 환경**: native Windows + Visual Studio. WSL2에서는 IOCP를 사용할 수 없다.
@@ -136,6 +137,16 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
   - pending I/O가 남은 상태에서 연결과 서버를 종료해 context 수명 오류가 없는지 확인
   - v4의 `epoll_wait()`와 IOCP 완료 통지 흐름을 같은 시나리오로 비교
   - Visual Studio AddressSanitizer 및 Application Verifier 등 Windows 도구 적용 검토
+
+- **완료 결과 (2026-08-17)**:
+  - `AcceptEx()` context 16개를 선게시하고 완료된 client socket을 IOCP에 등록
+  - 세션과 작업별 context를 분리하고, Recv/Send 동시 진행과 세션별 송신 순서를 보장
+  - `CONTAINING_RECORD`로 `OVERLAPPED`의 구조체 내 위치에 의존하지 않고 작업 context 복원
+  - 종료 시 socket을 닫아 pending I/O를 취소하고 5초 주기로 잔여 수를 진단하며 모두 회수
+  - 일반 빌드 200 clients × 10 msg에서 2000/2000 echo 및 pending receive 상태 종료 성공
+  - MSVC AddressSanitizer 빌드 50 clients × 20 msg에서 1000/1000 echo와 정상 종료,
+    메모리 안전성 오류 없음
+  - 강제 부분 전송 빌드에서 느린 수신 client의 4 MiB echo 일치 및 continuation 4,032회 확인
 
 ### v7 — IOCP + 워커/game logic queue 결합
 
@@ -192,5 +203,5 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 - [x] v3 — 고정 크기 thread pool + 작업 큐
 - [x] v4 — epoll 기반 이벤트 루프
 - [x] v5 — 이벤트 루프 + 워커 스레드 풀 결합
-- [ ] v6 — Windows IOCP 기반 비동기 I/O 서버
+- [x] v6 — Windows IOCP 기반 비동기 I/O 서버
 - [ ] v7 — IOCP + 워커/game logic queue 결합

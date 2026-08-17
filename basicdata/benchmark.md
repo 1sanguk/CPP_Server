@@ -13,7 +13,7 @@
 | v3 | 50 echo / 132 장기 연결 | - | 3.6 | 5.6 | - | main + accept 1 + worker 4 + monitor 1 | - | 50/50 성공, 총 17.8ms |
 | v4 | 50 clients / 1000 echo | 326 | - | - | - | main + server 1 | - | Docker/Linux, 1000/1000 echo 성공 |
 | v5 | 50 clients / 1000 echo (최대 2000 동시) | 32419 | - | - | - | reactor 1 + worker 4 + monitor 1 | - | 1000/1000, 40000/40000 성공, ASan/LSan 누수 없음 |
-| v6 | - | - | - | - | - | - | - | 미구현 |
+| v6 | 200 clients / 2000 echo | - | - | - | - | IOCP worker 16개(논리 코어 기준) | - | Windows, 2000/2000 성공, ASan 1000/1000 |
 | v7 | - | - | - | - | - | - | - | 미구현 |
 
 ## 측정 메모
@@ -55,3 +55,18 @@
 - 평균/p95/p99 지연시간과 정밀 메모리(RSS) 수치는 아직 측정하지 않았다 — 지금 쓰는
   부하 클라이언트가 총 소요 시간과 성공/실패 카운트만 측정하고 요청별 지연시간은
   기록하지 않는다.
+
+#### 측정일: 2026-08-17
+- 환경: native Windows, MSVC C++20, IOCP completion worker는 실행 환경의 논리 코어 수인
+  16개로 생성했다.
+- 일반 빌드에서 50 clients가 각각 20개 메시지를 보내 총 1000/1000 echo에 성공했다.
+  별도 client의 `WSARecv()`가 pending인 상태에서 서버를 종료해 pending I/O drain,
+  worker 16개 join, 프로세스 종료 코드 0을 확인했다.
+- 세션/작업별 context 분리와 Accept context 16개 선게시 후 200 clients가 각각 10개 메시지를
+  보내 총 2000/2000 echo에 성공했다.
+- MSVC AddressSanitizer 빌드에서는 50 clients × 20 msg(1000/1000 echo)와 같은 pending I/O
+  종료를 수행했고 use-after-free나 버퍼 오류가 보고되지 않았다. MSVC AddressSanitizer는
+  LeakSanitizer와 동일한 누수 검사를 제공하지 않으므로 누수 검증 결과로 확대 해석하지 않는다.
+- `V6_FORCE_PARTIAL_SEND_TEST` 빌드에서 느린 수신 client에 4 MiB를 전송해 전체 데이터 일치와
+  send continuation 4,032회를 확인했다.
+- 기능 회귀 확인용 실행이며 TPS, 요청별 평균/p95/p99 지연시간과 메모리 사용량은 측정하지 않았다.

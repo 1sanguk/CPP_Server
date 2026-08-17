@@ -122,3 +122,33 @@
   소켓에서 `Send_All()`을 **한 번만** 더 시도하는 최선 노력(best-effort) 방식은, 대부분의
   경우(작은 메시지, 커널 버퍼에 여유 있음) 실제로 성공하면서도 응답 없는 연결 때문에
   종료가 멈추는 일은 없다.
+
+## v6 — Windows IOCP 기반 비동기 I/O 서버
+
+- **IOCP는 준비 상태가 아니라 완료 결과를 전달한다.** `epoll`에서는 읽을 수 있다는 통지를
+  받은 뒤 `recv()`를 호출하지만, IOCP에서는 `WSARecv()`를 먼저 게시하고 완료된 바이트 수를
+  `GetQueuedCompletionStatus()`에서 받는다.
+
+- **`AcceptEx()`의 0바이트 완료는 연결 종료가 아니다.** 초기 수신 길이를 0으로 지정한
+  `AcceptEx()`는 정상 완료 시에도 전송 바이트가 0일 수 있다. 0바이트를 종료로 해석하는 규칙은
+  Recv completion에만 적용하고 I/O 타입을 함께 확인해야 한다.
+
+- **pending I/O보다 `OVERLAPPED` context가 오래 살아야 한다.** socket을 닫아 작업을
+  취소해도 completion이 돌아오기 전에 context를 삭제하면 안 된다. 종료 시에는 socket을
+  닫고, worker가 취소 completion을 회수해 context 목록이 빌 때까지 기다린 후 IOCP worker를
+  종료해야 한다.
+
+- **세션과 I/O 작업의 수명은 분리할 수 있다.** 세션은 socket과 순서 보장 송신 큐를 소유하고,
+  Accept/Recv/Send별 context가 각각 하나의 `OVERLAPPED` 작업만 소유하게 하면 Recv와 Send를
+  동시에 진행하면서도 작업 완료까지 필요한 상태를 안전하게 유지할 수 있다.
+
+- **completion의 `OVERLAPPED*`는 멤버 위치를 고려해 복원해야 한다.** 단순 포인터 변환은 첫
+  멤버 배치에 의존하지만 `CONTAINING_RECORD`는 멤버 오프셋을 사용하므로 구조체 배치 변경에 안전하다.
+
+- **partial send는 논리적 송신 범위와 실제 요청 범위를 구분해야 한다.** 세션의 송신 offset을
+  완료 바이트만큼 이동하고 남은 범위로 새 Send context를 만들면, 수신 버퍼와 독립적으로
+  continuation을 게시하면서 원래 메시지 순서를 유지할 수 있다.
+
+- **worker의 종료 신호와 서버 상태는 역할이 다르다.** `Stopping` 상태는 후속 I/O 게시를
+  막고, `PostQueuedCompletionStatus()`의 null `OVERLAPPED` 패킷은 pending completion을 모두
+  처리한 worker를 실제 루프에서 빠져나오게 한다.
