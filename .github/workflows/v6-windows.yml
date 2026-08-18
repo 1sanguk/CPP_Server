@@ -15,24 +15,52 @@ on:
 
 jobs:
   build-and-smoke-test:
+    name: ${{ matrix.name }}
     runs-on: windows-2022
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Normal
+            build_dir: server/build
+            config: Debug
+            cmake_args: ""
+            expect_partial: "false"
+          - name: Forced partial send
+            build_dir: server/build-partial
+            config: Debug
+            cmake_args: "-DV6_FORCE_PARTIAL_SEND_TEST=ON"
+            expect_partial: "true"
+          - name: AddressSanitizer
+            build_dir: server/build-asan
+            config: RelWithDebInfo
+            cmake_args: "-DV6_ENABLE_ASAN=ON"
+            expect_partial: "false"
+
+    env:
+      V6_BUILD_DIR: ${{ matrix.build_dir }}
+      V6_CONFIG: ${{ matrix.config }}
+      V6_CMAKE_ARGS: ${{ matrix.cmake_args }}
+      V6_EXPECT_PARTIAL: ${{ matrix.expect_partial }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Configure v6
-        run: cmake -S server -B server/build -A x64
+        shell: pwsh
+        run: cmake -S server -B $env:V6_BUILD_DIR -A x64 $env:V6_CMAKE_ARGS
 
       - name: Build v6
-        run: cmake --build server/build --config Debug --parallel
+        shell: pwsh
+        run: cmake --build $env:V6_BUILD_DIR --config $env:V6_CONFIG --parallel
 
       - name: Run echo and pending-send shutdown tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $serverPath = (Resolve-Path "server/build/v6/Debug/v6_server.exe").Path
+          $serverPath = (Resolve-Path "$env:V6_BUILD_DIR/v6/$env:V6_CONFIG/v6_server.exe").Path
 
           function Start-V6Server {
               $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -79,12 +107,17 @@ jobs:
               if ($stderr) {
                   Write-Host $stderr
               }
+              if ($stderr -match "ERROR: AddressSanitizer") {
+                  throw "AddressSanitizer reported an error"
+              }
               if ($process.ExitCode -ne 0) {
                   throw "v6_server exited with code $($process.ExitCode)"
               }
+              return $stdout
           }
 
           $echoServer = Start-V6Server
+          $echoOutput = ""
           try {
               $client = Connect-V6Client
               try {
@@ -117,11 +150,17 @@ jobs:
               }
           }
           finally {
-              Stop-V6Server $echoServer
+              $echoOutput = Stop-V6Server $echoServer
               $echoServer.Dispose()
           }
 
+          if ($env:V6_EXPECT_PARTIAL -eq "true" -and
+              $echoOutput -notmatch "partial sends=([1-9][0-9]*)") {
+              throw "Forced partial-send build did not report a partial send"
+          }
+
           $shutdownServer = Start-V6Server
+          $shutdownOutput = ""
           try {
               $slowClient = Connect-V6Client
               try {
@@ -136,7 +175,7 @@ jobs:
                       throw "Client could not submit the large payload within 10 seconds"
                   }
                   Start-Sleep -Milliseconds 200
-                  Stop-V6Server $shutdownServer
+                  $shutdownOutput = Stop-V6Server $shutdownServer
               }
               finally {
                   $slowClient.Dispose()
