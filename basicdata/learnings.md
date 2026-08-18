@@ -138,6 +138,11 @@
   닫고, worker가 취소 completion을 회수해 context 목록이 빌 때까지 기다린 후 IOCP worker를
   종료해야 한다.
 
+- **context만 살아 있다고 안전한 것이 아니라 OS에 넘긴 실제 버퍼도 completion까지 살아야
+  한다.** Send context가 세션 송신 큐 내부 주소를 참조하면 종료 중 큐를 비울 때 포인터가
+  무효화될 수 있다. 전송할 바이트를 Send context의 자체 버퍼에 복사하고 `WSABUF`가 그 버퍼를
+  가리키게 하면 context와 데이터의 수명이 함께 보장된다.
+
 - **세션과 I/O 작업의 수명은 분리할 수 있다.** 세션은 socket과 순서 보장 송신 큐를 소유하고,
   Accept/Recv/Send별 context가 각각 하나의 `OVERLAPPED` 작업만 소유하게 하면 Recv와 Send를
   동시에 진행하면서도 작업 완료까지 필요한 상태를 안전하게 유지할 수 있다.
@@ -152,3 +157,11 @@
 - **worker의 종료 신호와 서버 상태는 역할이 다르다.** `Stopping` 상태는 후속 I/O 게시를
   막고, `PostQueuedCompletionStatus()`의 null `OVERLAPPED` 패킷은 pending completion을 모두
   처리한 worker를 실제 루프에서 빠져나오게 한다.
+
+- **종료 요청과 자원 해제는 분리해야 공유 handle의 소유권이 명확해진다.** `Stop()`은 상태
+  전환과 대기 스레드 알림만 담당하고, socket과 IOCP handle 정리는 `Clean_Up()` 한 곳에서
+  수행하면 `Post_Accept()`와 종료 스레드가 `listen_socket`을 동시에 읽고 쓰는 경쟁을 피할 수 있다.
+
+- **미리 게시한 Accept 개수는 성공 경로뿐 아니라 실패 경로에서도 보충해야 한다.** 실행 중
+  실패한 `AcceptEx` context를 정리만 하면 accept depth가 하나씩 줄어든다. 종료 중 실패와
+  실행 중 실패를 구분하고, 실행 중에는 대체 `AcceptEx`를 다시 게시해야 목표 depth가 유지된다.

@@ -199,3 +199,36 @@
   패킷으로 worker를 종료하고 IOCP handle을 닫는다.
 - 확인: pending `WSARecv()`가 있는 상태에서 일반 빌드와 AddressSanitizer 빌드를 종료해
   completion drain, 모든 worker join, 종료 코드 0과 sanitizer 오류 없음을 확인했다.
+
+#### pending `WSASend()`가 세션 송신 큐의 해제된 메모리를 참조할 수 있었음
+
+- 증상: 정상 echo에서는 드러나지 않았지만, 송신이 pending인 상태에서 `Close_Session()`이
+  `send_queue`를 비우면 Windows가 아직 참조할 수 있는 `WSABUF.buf`가 무효화될 수 있었다.
+- 원인: Send context는 completion까지 유지됐지만 실제 전송 버퍼는 context가 아니라 세션의
+  송신 큐가 소유했다. context 수명만 보장하고 I/O buffer 수명은 별도로 보장하지 못했다.
+- 해결: 아직 보내지 않은 데이터를 Send context의 자체 버퍼로 복사하고 `WSABUF.buf`가 해당
+  버퍼를 가리키도록 변경했다. completion마다 세션 offset을 갱신하고 다음 context가 남은 범위를
+  다시 복사하는 기존 partial-send 흐름은 유지했다.
+- 확인: GitHub Actions Windows runner에서 일반 echo, 강제 partial-send, MSVC AddressSanitizer
+  작업이 모두 성공했다. 큰 데이터를 보낸 뒤 응답을 읽지 않은 상태의 서버 종료에서도 sanitizer
+  오류 없이 context drain과 정상 종료를 확인했다.
+
+#### `Stop()`과 `Post_Accept()`가 `listen_socket`을 서로 다른 규칙으로 접근함
+
+- 증상: 종료 요청과 Accept 게시가 겹치면 `Post_Accept()`가 `listen_socket`을 읽는 동안
+  `Stop()`이 같은 멤버를 `INVALID_SOCKET`으로 바꿀 수 있었다.
+- 원인: `Post_Accept()`는 context mutex를 사용하고 `Stop()`은 server mutex를 사용해 일반
+  변수인 `listen_socket`의 동시 read/write를 같은 동기화 규칙으로 보호하지 않았다.
+- 해결: `Stop()`은 `Stopping` 상태 전환과 condition variable 알림만 담당하고, 실제 socket
+  정리는 `Clean_Up()`에서만 수행하도록 소유권을 한 곳으로 모았다.
+- 확인: GitHub Actions의 세 Windows 작업에서 pending-send 종료가 30초 안에 완료되고 프로세스
+  종료 코드 0을 확인했다.
+
+#### 실행 중 실패한 `AcceptEx`를 보충하지 않아 accept depth가 감소함
+
+- 증상: 실행 중 `AcceptEx` completion이 실패할 때마다 선게시된 Accept 작업 수가 16개에서
+  하나씩 감소할 수 있었다.
+- 원인: 종료 중 취소 completion과 실행 중 실패 completion을 같은 분기에서 정리하고 반환했다.
+- 해결: 서버가 `Running`이 아닌 경우에는 정리만 하고, `Running` 상태의 실패라면 accept socket과
+  context를 정리한 뒤 `Post_Accept()`를 호출해 대체 작업을 게시하도록 분리했다.
+- 확인: Windows CI의 일반/강제 partial-send/ASan 작업에서 빌드, echo, 종료 회귀 테스트를 통과했다.

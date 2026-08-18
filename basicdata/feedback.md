@@ -461,6 +461,25 @@
     반복하도록 했다. 느린 수신 client의 4 MiB payload가 완전히 일치했고 continuation 4,032회를
     확인했다.
 
+- `[완료]` Send context가 completion까지 유지되더라도 `WSABUF`가 세션 송신 큐 내부 메모리를
+  직접 가리키면, 종료 중 `send_queue.clear()` 이후 pending `WSASend()`가 해제된 메모리를 참조할
+  수 있다.
+  - **보완 내용 (2026-08-18):** 아직 보내지 않은 범위를 Send `IoContext`의 자체 버퍼로 복사하고
+    `WSABUF.buf`가 context 버퍼를 가리키도록 변경했다. GitHub Actions Windows runner의 일반,
+    강제 partial-send, MSVC AddressSanitizer 작업에서 echo와 pending-send 종료를 모두 통과했다.
+
+- `[완료]` `Post_Accept()`가 `listen_socket`을 읽는 동안 `Stop()`이 서로 다른 mutex 아래에서
+  같은 멤버를 `INVALID_SOCKET`으로 변경해 data race가 발생할 수 있다.
+  - **보완 내용 (2026-08-18):** `Stop()`은 상태 전환과 `run_cv` 알림만 담당하고 socket 정리는
+    `Clean_Up()` 한 곳에서 수행하도록 책임을 분리했다. 세 Windows CI 작업에서 context drain과
+    30초 이내 정상 종료를 확인했다.
+
+- `[완료]` 실행 중 실패한 `AcceptEx` completion을 정리만 하면 선게시 accept depth가 실패할
+  때마다 감소한다.
+  - **보완 내용 (2026-08-18):** 종료 중 실패는 정리만 하고, `Running` 상태의 실패는 정리 후
+    `Post_Accept()`를 호출해 대체 Accept를 게시하도록 분기했다. Windows CI의 일반/강제
+    partial-send/ASan 회귀 테스트가 모두 성공했다.
+
 ## v7 — IOCP + 워커/game logic queue 결합
 
 구현 후 작성한다.

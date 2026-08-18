@@ -105,6 +105,8 @@ flowchart LR
     mutex 기반 단일 로그 출력 지점을 적용
   - native Windows 일반 빌드에서 200 clients × 10 msg(2000/2000), MSVC AddressSanitizer
     빌드에서 50 clients × 20 msg(1000/1000), 강제 부분 전송 4 MiB echo 성공
+  - GitHub Actions의 Windows runner에서 일반/강제 partial send/MSVC AddressSanitizer
+    3개 작업으로 echo와 pending-send 종료 회귀 테스트 통과
   - 상세 구조, 빌드 명령과 부분 전송 테스트 방법은 [v6 README](server/v6/README.md) 참고
 
 - [ ] **v7** — IOCP + 워커/game logic queue

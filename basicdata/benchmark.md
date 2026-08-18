@@ -70,3 +70,13 @@
 - `V6_FORCE_PARTIAL_SEND_TEST` 빌드에서 느린 수신 client에 4 MiB를 전송해 전체 데이터 일치와
   send continuation 4,032회를 확인했다.
 - 기능 회귀 확인용 실행이며 TPS, 요청별 평균/p95/p99 지연시간과 메모리 사용량은 측정하지 않았다.
+
+#### 측정일: 2026-08-18
+- 환경: GitHub Actions `windows-2022` runner, MSVC C++20. 성능 측정이 아니라 v6 보완 후
+  Windows 회귀 검증을 목적으로 실행했다.
+- 일반 Debug 작업에서 256 KiB echo 데이터 일치와, 응답을 읽지 않는 client가 4 MiB를 보낸
+  상태의 graceful shutdown 및 종료 코드 0을 확인했다.
+- `V6_FORCE_PARTIAL_SEND_TEST=ON` 작업에서 실제 partial-send 로그와 echo 데이터 일치를 확인했다.
+- MSVC AddressSanitizer `RelWithDebInfo` 작업에서 같은 echo 및 pending-send 종료 시나리오를
+  통과했고 use-after-free나 buffer overflow가 보고되지 않았다. LeakSanitizer와 동일한 누수
+  검증 결과로 확대 해석하지 않는다.

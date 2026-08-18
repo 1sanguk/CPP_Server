@@ -25,7 +25,7 @@ v4~v5의 Linux `epoll` readiness 모델과 같은 echo 시나리오를 구현해
 | 비동기 accept | 완료 | Accept context 16개 선게시, 완료마다 대체 accept 게시 |
 | client IOCP 등록 | 완료 | accept 완료 socket을 기존 IOCP handle에 연결 |
 | 비동기 echo | 완료 | Recv/Send 동시 진행, 세션별 순서 보장 송신 큐, partial send 처리 |
-| context 수명 | 완료 | 세션과 작업별 context 분리, `CONTAINING_RECORD`로 completion 복원 |
+| context 수명 | 완료 | 세션과 작업별 context 분리, Send 자체 버퍼 소유, `CONTAINING_RECORD`로 completion 복원 |
 | 로그 | 완료 | `Info` 생명주기, `Debug` 연결/I/O 흐름, `Error` API 실패 구분 |
 | 종료와 정리 | 완료 | pending I/O 취소·5초 주기 진단·drain, 종료 completion, worker join, handle 정리 |
 
@@ -38,7 +38,9 @@ v4~v5의 Linux `epoll` readiness 모델과 같은 echo 시나리오를 구현해
     유지하면서 받은 순서대로 echo한다.
 - `IoContext`
   - Accept, Recv, Send 중 하나의 pending overlapped 작업을 표현한다.
-  - Recv context는 독립 수신 버퍼를, Send context는 세션과 논리적 남은 송신 길이를 가진다.
+  - Recv context는 독립 수신 버퍼를 가진다. Send context는 세션 송신 큐의 남은 범위를 자체
+    버퍼로 복사해 pending `WSASend()`가 completion까지 안정된 메모리를 참조하게 한다.
+  - Send context는 논리적으로 남은 전체 길이와 이번 실제 요청 길이를 구분해 partial send를 잇는다.
   - `shared_ptr<ClientSession>`으로 completion이 도착할 때까지 세션 수명을 유지한다.
 - `pending_contexts`
   - Windows가 아직 `OVERLAPPED`를 참조할 수 있는 context를 추적한다.
@@ -152,6 +154,11 @@ cmake --build server/build-partial --config Debug
   send continuation 4,032회 확인
 - 주석·로그 추가 후 20 clients × 10 msg(200/200), 필수 생명주기 로그, stderr 없음과
   정상 종료를 다시 확인
+- GitHub Actions `windows-2022` runner에서 일반 Debug, 강제 partial-send Debug, MSVC
+  AddressSanitizer RelWithDebInfo 작업이 모두 성공했다. 각 작업은 echo 데이터 일치와 응답을
+  읽지 않는 4 MiB client가 있는 상태의 30초 이내 graceful shutdown을 검사한다.
+- ASan 작업은 Visual Studio 설치 경로의 `clang_rt.asan_dynamic-x86_64.dll`을 실행 파일 옆에
+  배치한 뒤 수행하며, use-after-free와 buffer 오류가 없음을 확인했다. 누수 검증 결과는 아니다.
 - TPS, 요청별 지연시간, 메모리 사용량은 아직 측정하지 않음
 
 ## 현재 구조의 범위
