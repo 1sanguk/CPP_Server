@@ -27,16 +27,19 @@ jobs:
             config: Debug
             cmake_args: ""
             expect_partial: "false"
+            asan: false
           - name: Forced partial send
             build_dir: server/build-partial
             config: Debug
             cmake_args: "-DV6_FORCE_PARTIAL_SEND_TEST=ON"
             expect_partial: "true"
+            asan: false
           - name: AddressSanitizer
             build_dir: server/build-asan
             config: RelWithDebInfo
             cmake_args: "-DV6_ENABLE_ASAN=ON"
             expect_partial: "false"
+            asan: true
 
     env:
       V6_BUILD_DIR: ${{ matrix.build_dir }}
@@ -55,6 +58,30 @@ jobs:
       - name: Build v6
         shell: pwsh
         run: cmake --build $env:V6_BUILD_DIR --config $env:V6_CONFIG --parallel
+
+      - name: Prepare AddressSanitizer runtime
+        if: matrix.asan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) {
+              throw "Visual Studio installation was not found"
+          }
+
+          $asanDll = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Recurse `
+              -Filter "clang_rt.asan_dynamic-x86_64.dll" |
+              Where-Object { $_.FullName -match "\\bin\\Hostx64\\x64\\" } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+          if (-not $asanDll) {
+              throw "MSVC AddressSanitizer runtime DLL was not found"
+          }
+
+          $serverDirectory = "$env:V6_BUILD_DIR\v6\$env:V6_CONFIG"
+          Copy-Item $asanDll.FullName $serverDirectory
+          Write-Host "Copied ASan runtime from $($asanDll.FullName)"
 
       - name: Run echo and pending-send shutdown tests
         shell: pwsh
