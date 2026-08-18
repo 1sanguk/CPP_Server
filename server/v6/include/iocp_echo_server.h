@@ -22,6 +22,9 @@ struct ClientSession{
     // Session은 연결의 수명과 여러 I/O 작업이 함께 사용하는 송신 상태를 소유한다.
     // IoContext는 이 객체를 shared_ptr로 잡아 completion 전까지 세션이 파괴되지 않게 한다.
     SOCKET client_socket = INVALID_SOCKET;
+    // accept 시점에 GetAcceptExSockaddrs로 파싱해 두어, 이후 모든 로그에서
+    // socket 핸들 숫자 대신 사람이 읽을 수 있는 IP:port로 클라이언트를 추적할 수 있게 한다.
+    std::string remote_endpoint = "unknown";
     // closesocket()과 새 overlapped I/O 게시가 겹치지 않도록 socket 접근을 직렬화한다.
     std::mutex socket_mutex;
     // Recv completion 여러 개가 데이터를 넣더라도 echo 순서는 이 큐에서 보장한다.
@@ -78,6 +81,7 @@ class IocpEchoServer{
         std::atomic<ServerState> server_state = ServerState::Creating;
 
         LPFN_ACCEPTEX lpfn_acceptex = nullptr;
+        LPFN_GETACCEPTEXSOCKADDRS lpfn_get_accept_ex_sockaddrs = nullptr;
         bool winsock_init_state = false;
         WSADATA wsaData{};
 
@@ -91,7 +95,7 @@ class IocpEchoServer{
         std::mutex session_mutex;
 
         std::mutex log_mutex;
-        LogLevel minimum_log_level = LogLevel::Info;
+        LogLevel minimum_log_level = Read_Log_Level_From_Env();
         std::atomic<std::uint64_t> partial_send_count = 0;
 
         bool Init_Winsock();
@@ -106,15 +110,17 @@ class IocpEchoServer{
         bool Post_Next_Send_Locked(const std::shared_ptr<ClientSession>& session);
 
         void Completion_worker_Loop(unsigned int index);
-        void Handle_Accept_Completion(IoContext* context, bool succeeded);
-        void Handle_Recv_Completion(IoContext* context, bool succeeded, DWORD byte_transferred);
-        void Handle_Send_Completion(IoContext* context, bool succeeded, DWORD byte_transferred);
+        void Handle_Accept_Completion(IoContext* context, bool succeeded, unsigned int worker_index);
+        void Handle_Recv_Completion(IoContext* context, bool succeeded, DWORD byte_transferred, unsigned int worker_index);
+        void Handle_Send_Completion(IoContext* context, bool succeeded, DWORD byte_transferred, unsigned int worker_index);
 
         void Finish_Context(IoContext* context);
         void Close_Session(const std::shared_ptr<ClientSession>& session);
         void Clean_Up();
         void Proceed_Stop();
         void Logging(LogLevel level, const std::string& message);
+        // V6_LOG_LEVEL 환경변수(debug/info/error)로 접속·워커·recv/send 상세 로그 노출 정도를 조절한다.
+        static LogLevel Read_Log_Level_From_Env();
 
     public:
         explicit IocpEchoServer(int port);

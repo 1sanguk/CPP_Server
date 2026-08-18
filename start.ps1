@@ -7,7 +7,24 @@ $serverBuildDir = Join-Path $repoRoot "build/server"
 $labBuildDir = Join-Path $repoRoot "build/server_lab"
 
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    throw "CMake is required. Install CMake and run .\start.ps1 again."
+    Write-Host "CMake was not found. Installing CMake..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    $choco = Get-Command choco -ErrorAction SilentlyContinue
+    if ($winget) {
+        & $winget.Source install --id Kitware.CMake -e --source winget --accept-package-agreements --accept-source-agreements
+    } elseif ($choco) {
+        & $choco.Source install cmake -y
+    } else {
+        throw "CMake is required, and no supported package manager (winget or choco) was found to install it automatically."
+    }
+
+    $cmakeBin = Join-Path ${env:ProgramFiles} "CMake\bin"
+    if (Test-Path $cmakeBin) {
+        $env:PATH = "$cmakeBin;$env:PATH"
+    }
+    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+        throw "CMake installation finished, but 'cmake' is still not on PATH. Restart your terminal and run .\start.ps1 again."
+    }
 }
 
 $qtPrefix = $env:SERVER_LAB_QT_PREFIX
@@ -42,9 +59,15 @@ if (-not $qtPrefix) {
 
 Write-Host "[1/5] Configuring Windows server versions..."
 cmake -S (Join-Path $repoRoot "server") -B $serverBuildDir -A x64
+if ($LASTEXITCODE -ne 0) {
+    throw "Configuring Windows server versions failed."
+}
 
 Write-Host "[2/5] Building Windows server versions..."
 cmake --build $serverBuildDir --config Release --parallel
+if ($LASTEXITCODE -ne 0) {
+    throw "Building Windows server versions failed."
+}
 
 Write-Host "[3/5] Configuring Server Architecture Lab..."
 $configureArgs = @("-S", (Join-Path $repoRoot "server_lab"), "-B", $labBuildDir, "-A", "x64")
@@ -58,7 +81,13 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[4/5] Building and testing Server Architecture Lab..."
 cmake --build $labBuildDir --config Release --parallel
+if ($LASTEXITCODE -ne 0) {
+    throw "Building Server Architecture Lab failed."
+}
 ctest --test-dir $labBuildDir -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) {
+    throw "Server Architecture Lab tests failed."
+}
 $labExecutable = Join-Path $labBuildDir "Release/MMO Server Lab.exe"
 $deployTool = Join-Path $qtPrefix "bin/windeployqt.exe"
 if (Test-Path $deployTool) {

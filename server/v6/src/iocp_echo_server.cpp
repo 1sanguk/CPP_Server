@@ -1,18 +1,38 @@
 #include <iocp_echo_server.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <iostream>
 
 constexpr int kBacklog = 128;
 constexpr unsigned int kAcceptDepth = 16;
 constexpr auto kCleanupDiagnosticInterval = std::chrono::seconds(5);
+// AcceptEx가 로컬/원격 주소를 각각 담아갈 여유 버퍼 크기. sockaddr_in에 16바이트 여유를
+// 더한 값은 Winsock 문서가 요구하는 최소 크기다.
+constexpr DWORD kAcceptAddressLength = sizeof(sockaddr_in) + 16;
 
 IocpEchoServer::IocpEchoServer(int port) : server_port(port){}
 
 IocpEchoServer::~IocpEchoServer(){
     // 명시적 Stop() 호출 여부와 관계없이 동일한 종료 절차를 한 번 거친다.
     this->Proceed_Stop();
+}
+
+IocpEchoServer::LogLevel IocpEchoServer::Read_Log_Level_From_Env(){
+    // 기본은 접속/해제/워커 활동이 보이는 Info. V6_LOG_LEVEL=debug로 recv/send
+    // 바이트 단위 추적까지, error로 오류만 보도록 조절할 수 있다.
+    char buffer[16]{};
+    DWORD length = GetEnvironmentVariableA("V6_LOG_LEVEL", buffer, sizeof(buffer));
+    if(length == 0 || length >= sizeof(buffer)){
+        return LogLevel::Info;
+    }
+    std::string value(buffer, length);
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    if(value == "debug") return LogLevel::Debug;
+    if(value == "error") return LogLevel::Error;
+    return LogLevel::Info;
 }
 
 void IocpEchoServer::Logging(LogLevel level, const std::string& message){
@@ -74,17 +94,28 @@ bool IocpEchoServer::Create_Listen_Socket(){
 }
 
 bool IocpEchoServer::Get_AcceptEx(){
-    // AcceptEx는 Winsock 확장 함수라 실행 중인 provider에서 함수 포인터를 얻어야 한다.
-    GUID guid = WSAID_ACCEPTEX;
+    // AcceptEx/GetAcceptExSockaddrs는 Winsock 확장 함수라 실행 중인 provider에서
+    // 함수 포인터를 얻어야 한다.
+    GUID accept_guid = WSAID_ACCEPTEX;
     DWORD bytes_returned{};
     int result = WSAIoctl(this->listen_socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
-        &guid, sizeof(guid), &this->lpfn_acceptex, sizeof(this->lpfn_acceptex),
+        &accept_guid, sizeof(accept_guid), &this->lpfn_acceptex, sizeof(this->lpfn_acceptex),
         &bytes_returned, nullptr, nullptr);
     if(result == SOCKET_ERROR){
-        this->Logging(LogLevel::Error, "[IocpEchoServer] WSAIoctl failed: " + std::to_string(WSAGetLastError()));
+        this->Logging(LogLevel::Error, "[IocpEchoServer] WSAIoctl(AcceptEx) failed: " + std::to_string(WSAGetLastError()));
         return false;
     }
-    this->Logging(LogLevel::Info, "[IocpEchoServer] AcceptEx function loaded");
+
+    GUID sockaddrs_guid = WSAID_GETACCEPTEXSOCKADDRS;
+    result = WSAIoctl(this->listen_socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
+        &sockaddrs_guid, sizeof(sockaddrs_guid), &this->lpfn_get_accept_ex_sockaddrs, sizeof(this->lpfn_get_accept_ex_sockaddrs),
+        &bytes_returned, nullptr, nullptr);
+    if(result == SOCKET_ERROR){
+        this->Logging(LogLevel::Error, "[IocpEchoServer] WSAIoctl(GetAcceptExSockaddrs) failed: " + std::to_string(WSAGetLastError()));
+        return false;
+    }
+
+    this->Logging(LogLevel::Info, "[IocpEchoServer] AcceptEx extension functions loaded");
     return true;
 }
 
@@ -128,7 +159,6 @@ bool IocpEchoServer::Post_Accept(){
     }
 
     DWORD bytes_received{};
-    DWORD address_length = sizeof(sockaddr_in) + 16;
     int error = 0;
     {
         std::lock_guard<std::mutex> lock(this->context_mutex);
@@ -139,7 +169,7 @@ bool IocpEchoServer::Post_Accept(){
         }
         this->pending_contexts.emplace(context);
         // 동기 성공이어도 completion packet은 IOCP로 전달되므로 여기서 직접 처리하지 않는다.
-        bool result = this->lpfn_acceptex(this->listen_socket, context->accept_socket, context->buffer, 0, address_length, address_length, &bytes_received, &context->overlapped);
+        bool result = this->lpfn_acceptex(this->listen_socket, context->accept_socket, context->buffer, 0, kAcceptAddressLength, kAcceptAddressLength, &bytes_received, &context->overlapped);
         if(!result){
             error = WSAGetLastError();
             if(error != WSA_IO_PENDING){
@@ -314,16 +344,21 @@ void IocpEchoServer::Close_Session(const std::shared_ptr<ClientSession>& session
     }
     if(socket_to_close != INVALID_SOCKET){
         closesocket(socket_to_close);
-        this->Logging(LogLevel::Debug, "[IocpEchoServer] client closed, socket=" + std::to_string(socket_to_close));
     }
 
-    std::lock_guard<std::mutex> lock(this->session_mutex);
-    this->sessions.erase(session);
-    this->Logging(LogLevel::Debug,
-        "[IocpEchoServer] active sessions=" + std::to_string(this->sessions.size()));
+    std::size_t remaining_sessions = 0;
+    {
+        std::lock_guard<std::mutex> lock(this->session_mutex);
+        this->sessions.erase(session);
+        remaining_sessions = this->sessions.size();
+    }
+    this->Logging(LogLevel::Info,
+        "[IocpEchoServer] client disconnected, remote=" + session->remote_endpoint +
+        ", socket=" + std::to_string(socket_to_close) +
+        ", active_sessions=" + std::to_string(remaining_sessions));
 }
 
-void IocpEchoServer::Handle_Accept_Completion(IoContext* context, bool succeeded){
+void IocpEchoServer::Handle_Accept_Completion(IoContext* context, bool succeeded, unsigned int worker_index){
     SOCKET accepted_socket = context->accept_socket;
     context->accept_socket = INVALID_SOCKET;
 
@@ -370,15 +405,35 @@ void IocpEchoServer::Handle_Accept_Completion(IoContext* context, bool succeeded
         return;
     }
 
+    std::string remote_endpoint = "unknown";
+    if(this->lpfn_get_accept_ex_sockaddrs != nullptr){
+        sockaddr* local_addr = nullptr;
+        sockaddr* remote_addr = nullptr;
+        int local_addr_len = 0;
+        int remote_addr_len = 0;
+        this->lpfn_get_accept_ex_sockaddrs(context->buffer, 0, kAcceptAddressLength, kAcceptAddressLength,
+            &local_addr, &local_addr_len, &remote_addr, &remote_addr_len);
+        if(remote_addr != nullptr && remote_addr->sa_family == AF_INET){
+            auto* remote_addr_in = reinterpret_cast<sockaddr_in*>(remote_addr);
+            char ip_text[INET_ADDRSTRLEN]{};
+            if(inet_ntop(AF_INET, &remote_addr_in->sin_addr, ip_text, sizeof(ip_text)) != nullptr){
+                remote_endpoint = std::string(ip_text) + ":" + std::to_string(ntohs(remote_addr_in->sin_port));
+            }
+        }
+    }
+
     auto session = std::make_shared<ClientSession>(accepted_socket);
+    session->remote_endpoint = remote_endpoint;
     std::size_t active_session_count = 0;
     {
         std::lock_guard<std::mutex> lock(this->session_mutex);
         this->sessions.emplace(session);
         active_session_count = this->sessions.size();
     }
-    this->Logging(LogLevel::Debug,
-        "[IocpEchoServer] client accepted, socket=" + std::to_string(accepted_socket) +
+    this->Logging(LogLevel::Info,
+        "[IocpEchoServer] client connected, worker=" + std::to_string(worker_index) +
+        ", remote=" + remote_endpoint +
+        ", socket=" + std::to_string(accepted_socket) +
         ", active_sessions=" + std::to_string(active_session_count));
     delete context;
     // 완료된 Accept 하나를 즉시 보충한 뒤 새 client의 첫 Recv를 게시한다.
@@ -388,7 +443,7 @@ void IocpEchoServer::Handle_Accept_Completion(IoContext* context, bool succeeded
     }
 }
 
-void IocpEchoServer::Handle_Recv_Completion(IoContext* context, bool succeeded, DWORD byte_transferred){
+void IocpEchoServer::Handle_Recv_Completion(IoContext* context, bool succeeded, DWORD byte_transferred, unsigned int worker_index){
     auto session = context->session;
     if(!succeeded || byte_transferred == 0 || this->server_state.load() != ServerState::Running){
         delete context;
@@ -402,7 +457,9 @@ void IocpEchoServer::Handle_Recv_Completion(IoContext* context, bool succeeded, 
         socket_value = session->client_socket;
     }
     this->Logging(LogLevel::Debug,
-        "[IocpEchoServer] recv completed, socket=" + std::to_string(socket_value) +
+        "[IocpEchoServer] recv completed, worker=" + std::to_string(worker_index) +
+        ", remote=" + session->remote_endpoint +
+        ", socket=" + std::to_string(socket_value) +
         ", bytes=" + std::to_string(byte_transferred));
     // 받은 바이트는 송신 큐로 복사되므로 Recv context를 지운 뒤에도 안전하다.
     bool send_result = this->Enqueue_Send(session, context->buffer, byte_transferred);
@@ -412,7 +469,7 @@ void IocpEchoServer::Handle_Recv_Completion(IoContext* context, bool succeeded, 
     }
 }
 
-void IocpEchoServer::Handle_Send_Completion(IoContext* context, bool succeeded, DWORD byte_transferred){
+void IocpEchoServer::Handle_Send_Completion(IoContext* context, bool succeeded, DWORD byte_transferred, unsigned int worker_index){
     auto session = context->session;
     bool post_result = true;
     SOCKET socket_value = INVALID_SOCKET;
@@ -428,7 +485,8 @@ void IocpEchoServer::Handle_Send_Completion(IoContext* context, bool succeeded, 
             if(byte_transferred < context->logical_send_length){
                 ++this->partial_send_count;
                 this->Logging(LogLevel::Debug,
-                    "[IocpEchoServer] partial send completed, socket=" +
+                    "[IocpEchoServer] partial send completed, worker=" + std::to_string(worker_index) +
+                    ", remote=" + session->remote_endpoint + ", socket=" +
                     std::to_string(socket_value) + ", bytes=" +
                     std::to_string(byte_transferred) + ", logical_remaining=" +
                     std::to_string(context->logical_send_length));
@@ -445,7 +503,8 @@ void IocpEchoServer::Handle_Send_Completion(IoContext* context, bool succeeded, 
                 post_result = this->Post_Next_Send_Locked(session);
             }
             this->Logging(LogLevel::Debug,
-                "[IocpEchoServer] send completed, socket=" + std::to_string(socket_value) +
+                "[IocpEchoServer] send completed, worker=" + std::to_string(worker_index) +
+                ", remote=" + session->remote_endpoint + ", socket=" + std::to_string(socket_value) +
                 ", bytes=" + std::to_string(byte_transferred) +
                 ", queued_messages=" + std::to_string(session->send_queue.size()));
         }
@@ -457,7 +516,8 @@ void IocpEchoServer::Handle_Send_Completion(IoContext* context, bool succeeded, 
 }
 
 void IocpEchoServer::Completion_worker_Loop(unsigned int index){
-    this->Logging(LogLevel::Info, "[IocpEchoServer] worker " + std::to_string(index) + " started");
+    this->Logging(LogLevel::Info, "[IocpEchoServer] worker " + std::to_string(index) +
+        " started, thread_id=" + std::to_string(GetCurrentThreadId()));
     while(true){
         DWORD byte_transferred{};
         ULONG_PTR completion_key{};
@@ -499,13 +559,13 @@ void IocpEchoServer::Completion_worker_Loop(unsigned int index){
         this->Finish_Context(context);
         switch(context->io_type){
             case IoContext::IoType::Accept:
-                this->Handle_Accept_Completion(context, succeeded);
+                this->Handle_Accept_Completion(context, succeeded, index);
                 break;
             case IoContext::IoType::Recv:
-                this->Handle_Recv_Completion(context, succeeded, byte_transferred);
+                this->Handle_Recv_Completion(context, succeeded, byte_transferred, index);
                 break;
             case IoContext::IoType::Send:
-                this->Handle_Send_Completion(context, succeeded, byte_transferred);
+                this->Handle_Send_Completion(context, succeeded, byte_transferred, index);
                 break;
         }
     }
