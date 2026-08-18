@@ -139,9 +139,7 @@ bool IocpEchoServer::Post_Accept(){
         }
         this->pending_contexts.emplace(context);
         // 동기 성공이어도 completion packet은 IOCP로 전달되므로 여기서 직접 처리하지 않는다.
-        bool result = this->lpfn_acceptex(this->listen_socket, context->accept_socket,
-            context->buffer, 0, address_length, address_length,
-            &bytes_received, &context->overlapped);
+        bool result = this->lpfn_acceptex(this->listen_socket, context->accept_socket, context->buffer, 0, address_length, address_length, &bytes_received, &context->overlapped);
         if(!result){
             error = WSAGetLastError();
             if(error != WSA_IO_PENDING){
@@ -213,9 +211,18 @@ bool IocpEchoServer::Post_Next_Send_Locked(const std::shared_ptr<ClientSession>&
     context->io_type = IoContext::IoType::Send;
     context->session = session;
     auto& data = session->send_queue.front();
-    context->wsa_buffer.buf = data.data() + session->send_offset;
     context->logical_send_length = data.size() - session->send_offset;
+
+    if(context->logical_send_length > sizeof(context->buffer)){
+        delete context;
+        session->send_pending = false;
+        return false;
+    }
+
+    std::copy_n(data.data() + session->send_offset, context->logical_send_length, context->buffer);
+
     context->wsa_buffer.len = static_cast<ULONG>(context->logical_send_length);
+    context->wsa_buffer.buf = context->buffer;
 #ifdef V6_FORCE_PARTIAL_SEND_TEST
     // OS 상황에 의존하지 않고 continuation 경로를 반복 검증하는 테스트 전용 제한이다.
     context->wsa_buffer.len = (std::min)(context->wsa_buffer.len, 1024UL);
@@ -320,12 +327,23 @@ void IocpEchoServer::Handle_Accept_Completion(IoContext* context, bool succeeded
     SOCKET accepted_socket = context->accept_socket;
     context->accept_socket = INVALID_SOCKET;
 
-    // 종료 중 취소된 AcceptEx도 실패 completion으로 돌아오므로 조용히 socket만 회수한다.
-    if(!succeeded || this->server_state.load() != ServerState::Running){
+    if(this->server_state.load() != ServerState::Running){
         if(accepted_socket != INVALID_SOCKET){
             closesocket(accepted_socket);
         }
         delete context;
+        return;
+    }
+
+    // 실행 중 AcceptEx가 실패하면 해당 socket을 회수하고 accept depth를 보충한다.
+    if(!succeeded){
+        if(accepted_socket != INVALID_SOCKET){
+            closesocket(accepted_socket);
+        }
+        delete context;
+
+        this->Post_Accept();
+
         return;
     }
 
@@ -575,8 +593,7 @@ void IocpEchoServer::Clean_Up(){
 }
 
 void IocpEchoServer::Server_Run(){
-    this->Logging(LogLevel::Info,
-        "[IocpEchoServer] server starting, port=" + std::to_string(this->server_port));
+    this->Logging(LogLevel::Info, "[IocpEchoServer] server starting, port=" + std::to_string(this->server_port));
     {
         std::lock_guard<std::mutex> lock(this->server_mutex);
         ServerState expected = ServerState::Creating;
@@ -585,8 +602,22 @@ void IocpEchoServer::Server_Run(){
         }
     }
 
-    if(!this->Init_Winsock() || !this->Create_Listen_Socket() ||
-       !this->Get_AcceptEx() || !this->Create_Completion_Port()){
+    if(!this->Init_Winsock()){
+        this->Proceed_Stop();
+        return;
+    }
+
+    if(!this->Create_Listen_Socket()){
+        this->Proceed_Stop();
+        return;
+    }
+
+    if(!this->Get_AcceptEx()){
+        this->Proceed_Stop();
+        return;
+    }
+
+    if(!this->Create_Completion_Port()){
         this->Proceed_Stop();
         return;
     }
@@ -598,12 +629,13 @@ void IocpEchoServer::Server_Run(){
             ++posted_accepts;
         }
     }
+
     if(posted_accepts == 0){
         this->Proceed_Stop();
         return;
     }
-    this->Logging(LogLevel::Info,
-        "[IocpEchoServer] AcceptEx initial posts=" + std::to_string(posted_accepts));
+
+    this->Logging(LogLevel::Info, "[IocpEchoServer] AcceptEx initial posts=" + std::to_string(posted_accepts));
 
     // 네트워크 처리는 completion worker가 담당한다. Server_Run 스레드는 Stop 신호만 기다린다.
     {
@@ -616,7 +648,8 @@ void IocpEchoServer::Server_Run(){
 }
 
 void IocpEchoServer::Stop(){
-    SOCKET listen_to_close = INVALID_SOCKET;
+    // Stop은 서버 멈춤에만 집중하고 리소스 정리는 Clean_Up에게 맡긴다.
+    // SOCKET listen_to_close = INVALID_SOCKET;
     {
         std::lock_guard<std::mutex> lock(this->server_mutex);
         ServerState expected = ServerState::Running;
@@ -625,12 +658,14 @@ void IocpEchoServer::Stop(){
             this->server_state.compare_exchange_strong(expected, ServerState::Stopped);
             return;
         }
-        listen_to_close = this->listen_socket;
-        this->listen_socket = INVALID_SOCKET;
+        // listen_to_close = this->listen_socket;
+        // this->listen_socket = INVALID_SOCKET;
     }
-    if(listen_to_close != INVALID_SOCKET){
-        closesocket(listen_to_close);
-    }
+
+    // if(listen_to_close != INVALID_SOCKET){
+    //     closesocket(listen_to_close);
+    // }
+
     this->Logging(LogLevel::Info, "[IocpEchoServer] stop requested");
     this->run_cv.notify_all();
 }

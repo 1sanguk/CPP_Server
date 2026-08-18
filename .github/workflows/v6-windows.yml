@@ -1,0 +1,150 @@
+name: v6 Windows IOCP
+
+on:
+  push:
+    paths:
+      - "server/CMakeLists.txt"
+      - "server/v6/**"
+      - ".github/workflows/v6-windows.yml"
+  pull_request:
+    paths:
+      - "server/CMakeLists.txt"
+      - "server/v6/**"
+      - ".github/workflows/v6-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke-test:
+    runs-on: windows-2022
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure v6
+        run: cmake -S server -B server/build -A x64
+
+      - name: Build v6
+        run: cmake --build server/build --config Debug --parallel
+
+      - name: Run echo and pending-send shutdown tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $serverPath = (Resolve-Path "server/build/v6/Debug/v6_server.exe").Path
+
+          function Start-V6Server {
+              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $serverPath
+              $startInfo.UseShellExecute = $false
+              $startInfo.RedirectStandardInput = $true
+              $startInfo.RedirectStandardOutput = $true
+              $startInfo.RedirectStandardError = $true
+
+              $process = [System.Diagnostics.Process]::new()
+              $process.StartInfo = $startInfo
+              if (-not $process.Start()) {
+                  throw "Failed to start v6_server.exe"
+              }
+              return $process
+          }
+
+          function Connect-V6Client {
+              for ($attempt = 0; $attempt -lt 50; ++$attempt) {
+                  $client = [System.Net.Sockets.TcpClient]::new()
+                  try {
+                      $client.Connect("127.0.0.1", 9000)
+                      return $client
+                  }
+                  catch {
+                      $client.Dispose()
+                      Start-Sleep -Milliseconds 100
+                  }
+              }
+              throw "v6_server did not listen on port 9000"
+          }
+
+          function Stop-V6Server($process) {
+              $process.StandardInput.WriteLine()
+              $process.StandardInput.Flush()
+              if (-not $process.WaitForExit(30000)) {
+                  $process.Kill($true)
+                  throw "v6_server did not stop within 30 seconds"
+              }
+
+              $stdout = $process.StandardOutput.ReadToEnd()
+              $stderr = $process.StandardError.ReadToEnd()
+              Write-Host $stdout
+              if ($stderr) {
+                  Write-Host $stderr
+              }
+              if ($process.ExitCode -ne 0) {
+                  throw "v6_server exited with code $($process.ExitCode)"
+              }
+          }
+
+          $echoServer = Start-V6Server
+          try {
+              $client = Connect-V6Client
+              try {
+                  $stream = $client.GetStream()
+                  $stream.ReadTimeout = 10000
+                  $payload = [byte[]]::new(262144)
+                  for ($i = 0; $i -lt $payload.Length; ++$i) {
+                      $payload[$i] = $i % 251
+                  }
+
+                  $stream.Write($payload, 0, $payload.Length)
+                  $received = [byte[]]::new($payload.Length)
+                  $offset = 0
+                  while ($offset -lt $received.Length) {
+                      $count = $stream.Read($received, $offset, $received.Length - $offset)
+                      if ($count -eq 0) {
+                          throw "Server closed during echo response"
+                      }
+                      $offset += $count
+                  }
+
+                  $sentBase64 = [System.Convert]::ToBase64String($payload)
+                  $receivedBase64 = [System.Convert]::ToBase64String($received)
+                  if ($sentBase64 -cne $receivedBase64) {
+                      throw "Echo payload mismatch"
+                  }
+              }
+              finally {
+                  $client.Dispose()
+              }
+          }
+          finally {
+              Stop-V6Server $echoServer
+              $echoServer.Dispose()
+          }
+
+          $shutdownServer = Start-V6Server
+          try {
+              $slowClient = Connect-V6Client
+              try {
+                  $stream = $slowClient.GetStream()
+                  $largePayload = [byte[]]::new(4194304)
+                  for ($i = 0; $i -lt $largePayload.Length; ++$i) {
+                      $largePayload[$i] = $i % 239
+                  }
+
+                  $writeTask = $stream.WriteAsync($largePayload, 0, $largePayload.Length)
+                  if (-not $writeTask.Wait(10000)) {
+                      throw "Client could not submit the large payload within 10 seconds"
+                  }
+                  Start-Sleep -Milliseconds 200
+                  Stop-V6Server $shutdownServer
+              }
+              finally {
+                  $slowClient.Dispose()
+              }
+          }
+          finally {
+              if (-not $shutdownServer.HasExited) {
+                  $shutdownServer.Kill($true)
+              }
+              $shutdownServer.Dispose()
+          }
