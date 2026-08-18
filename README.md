@@ -1,112 +1,113 @@
-# MMO_Server
+# MMO Server Architecture Lab
 
-## 프로젝트 목적
-C++ 실무 경험이 많지 않은 상태에서, MMO RPG 서버의 기초 밑단(네트워크 + 멀티스레드)을 직접 만들어보며 C++ 실력을 쌓기 위한 학습 프로젝트.
+C++ 네트워크 서버를 v1부터 단계적으로 구현하고, GUI에서 버전별 동시성 구조와 동작 차이를 직접 비교하는 학습 프로젝트입니다.
 
-## 진행 방식
-한 번에 완성된 서버를 만드는 대신, 버전을 올려가며 여러 개의 "기초 뼈대"를 단계적으로 구현한다.
-각 뼈대는 서로 다른 동시성/네트워크 처리 방식을 대표하며, 이 과정을 거치면 어떤 구조(뼈대)로도 서버를 만들 수 있는 기반 지식을 갖추는 것이 목표.
+![MMO Server Architecture Lab GUI](docs/images/server-architecture-lab.png)
 
-버전별 상세 계획은 [basicdata/roadmap.md](basicdata/roadmap.md) 참고.
+## 버전별 구조
 
-## 버전 개요
-각 버전의 아키텍처 다이어그램과 구현 포인트는 버전별 README를 참고.
-
-1. **v1** — 싱글 스레드 blocking TCP 서버 (완료) → [server/v1/README.md](server/v1/README.md)
-2. **v2** — thread-per-connection (완료) → [server/v2/README.md](server/v2/README.md)
-3. **v3** — 고정 크기 thread pool + bounded 작업 큐 (완료) → [server/v3/README.md](server/v3/README.md)
-4. **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 (완료) → [server/v4/README.md](server/v4/README.md)
-5. **v5** — 이벤트 루프 + 워커 스레드 풀 결합 (완료) → [server/v5/README.md](server/v5/README.md)
-6. **v6** — Windows IOCP 기반 비동기 I/O 서버 (완료) → [server/v6/README.md](server/v6/README.md)
-7. **v7** — IOCP + 워커/game logic queue 결합 (예정)
-
-## 구조 발전 한눈에 보기
-
-각 버전은 이전 버전에서 확인한 한계를 다음 버전의 학습 주제로 가져간다.
+| 버전 | 구조 | 상태 |
+|---|---|---|
+| v1 | [단일 스레드 blocking TCP](server/v1/README.md) | 완료 |
+| v2 | [thread-per-connection](server/v2/README.md) | 완료 |
+| v3 | [고정 thread pool + bounded queue](server/v3/README.md) | 완료 |
+| v4 | [단일 epoll reactor](server/v4/README.md) | 완료 |
+| v5 | [epoll reactor + worker pool](server/v5/README.md) | 완료 |
+| v6 | [Windows IOCP completion I/O](server/v6/README.md) | 완료 |
+| v7 | IOCP + game logic queue | 예정 |
 
 ```mermaid
 flowchart LR
     V1["v1<br/>단일 blocking"] -->|"동시 접속"| V2["v2<br/>접속당 thread"]
     V2 -->|"thread 수 제한"| V3["v3<br/>고정 thread pool"]
     V3 -->|"worker blocking 제거"| V4["v4<br/>단일 epoll reactor"]
-    V4 -->|"non-blocking 송신과 작업 분리"| V5["v5<br/>reactor + job workers"]
-    V5 -. "Windows 비교 트랙" .-> V6["v6<br/>IOCP completion"]
+    V4 -->|"I/O와 작업 분리"| V5["v5<br/>reactor + workers"]
+    V5 -. "Windows 비교" .-> V6["v6<br/>IOCP completion"]
     V6 -->|"게임 로직 분리"| V7["v7<br/>IOCP + logic queue"]
 ```
 
-## 타겟 플랫폼
-- **클라이언트**: Windows에서 플레이됨. 단, TCP/IP는 프로토콜 레벨이라 클라이언트 OS는 서버 코드에 영향을 주지 않음.
-- **서버 배포 환경**: Linux로 확정. 따라서 v4~v5의 Linux epoll 선택은 일반론이 아니라 실제 배포 타겟에 맞춘 것.
-- v1~v3: macOS(로컬)에서 바로 진행 (BSD 소켓 API, Linux에서도 동일하게 동작)
-- v4~v5: Linux epoll 타겟 (Docker/VM 환경 필요, 실제 배포 환경과 동일)
-- v6~v7: native Windows IOCP 비교 학습 트랙 (Windows + Visual Studio 환경)
+## 운영체제별 실행 범위
 
-## 빌드 / 개발 환경
-- 빌드 시스템: CMake.
-- v1~v3의 POSIX/BSD 소켓 코드는 macOS와 Linux에서 같은 CMake 구조로 빌드한다.
-- v4~v5의 epoll 코드는 Linux 전용이므로 Docker/WSL2 같은 Linux 환경에서 빌드한다.
-- 에디터: 맥에서는 **VS Code**(CMake 확장) 사용. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 실행 불가 ("Visual Studio for Mac"은 단종 + C++용도 아니었음).
-- Windows에서는 v4~v5를 WSL2에서 개발하고, v6~v7은 native Windows + Visual Studio에서
-  IOCP를 직접 구현한다.
-- v6는 MSVC C++20, `/W4`, `/utf-8` 설정으로 빌드하며 Winsock2 라이브러리를 연결한다.
+| 호스트 | Native | Docker | 실행 불가 또는 미구현 |
+|---|---|---|---|
+| macOS | v1~v3 | v4~v5 | v6, v7 |
+| Linux | v1~v5 | 필요 없음 | v6, v7 |
+| Windows | v6 | 현재 GUI에서 미지원 | v1~v5, v7 |
 
-## 관련 문서
-- [basicdata/benchmark.md](basicdata/benchmark.md) — 버전별 성능 실측치
-- [basicdata/troubleshooting.md](basicdata/troubleshooting.md) — 버그 재현/수정 기록
-- [basicdata/learnings.md](basicdata/learnings.md) — 버전별로 깨달은 개념 정리
-- [basicdata/feedback.md](basicdata/feedback.md) — AI의 피드백 기록
+v4~v5는 Linux의 `epoll`과 `eventfd`, v6는 Windows의 Winsock2와 IOCP를 사용하므로 플랫폼별 실행 범위가 다릅니다. 선택할 수 없는 버전도 구조와 설명은 GUI에서 확인할 수 있습니다.
 
-## 현재 상태
-- [x] **v1** — blocking socket 흐름, partial send, `EINTR`, 길이 기반 로그,
-  `SO_REUSEADDR`까지 구현 및 echo 회귀 테스트 완료
+## 빌드 구조
 
-- [x] **v2** — thread-per-connection, 활성 client 목록의 mutex 보호, 동시 접속과
-  fd 정리 테스트 완료
+- 서버 빌드: `build/server`
+- GUI 빌드: `build/server_lab`
+- macOS 앱: `MMO Server Lab.app`
+- Windows 실행 파일: `build/server_lab/Release/MMO Server Lab.exe`
+- 표준: C++20
+- GUI: Qt Widgets + Qt Network
 
-- [x] **v3** — 고정 worker 4개, 최대 128개의 bounded queue, condition variable,
-  worker monitor, SIGINT/SIGTERM graceful shutdown 구현 완료
-  - 동시 echo 50개 요청 50/50 성공
-  - 장기 연결 140개 포화 테스트에서 worker 처리 4개 + 큐 대기 128개 유지,
-    초과 연결 8개 거부 확인
-  - 활성 연결 6개 상태에서 `Ctrl+C` 종료 시 client 정리, worker/monitor join,
-    `Stopping` 출력과 프로세스 종료 확인
+`start.sh`와 `start.ps1`은 CMake 설정, 변경된 대상 빌드, 테스트, Qt 배포와 GUI 실행을 순서대로 처리합니다. 기존 빌드가 있으면 CMake의 증분 빌드를 사용합니다.
 
-- [x] **v4** — Linux epoll 기반 단일 스레드 reactor echo 서버 구현 완료
-  - Docker Ubuntu 24.04 환경에서 `v4_server` 빌드 성공
-  - `epoll_create1()`/`epoll_ctl()`/`epoll_wait()`로 listen fd, client fd,
-    `eventfd` 기반 stop fd를 하나의 이벤트 루프에서 처리
-  - 5개 동시 `nc` 클라이언트 echo 성공
-  - `Ctrl+C` 시 SIGINT를 `sigwait()`로 받고 `eventfd`로 `epoll_wait()`를 깨워
-    client fd, listen fd, stop fd, epoll fd 정리 확인
+## 상세 문서
 
-- [x] **v5** — 이벤트 루프 + 워커 스레드 풀 결합 구현 완료
-  - reactor(epoll 루프)는 I/O(recv/send)만 담당, 워커는 job queue로 받은 데이터를
-    세션별 송신 버퍼에 적재하고 `EPOLLOUT`으로 reactor에게 송신을 넘김
-  - client fd non-blocking + `EPOLLOUT` + 세션별 송신 버퍼, `Send_All()`의
-    Completed/Partial/Failed 상태 구분, 같은 커넥션의 job을 항상 같은 워커로
-    보내는 sticky routing, 뮤텍스로 보호된 단일 로그 출력 지점, 종료 시 pending
-    데이터 best-effort flush까지 구현
-  - v4와 동일 시나리오(50 clients × 20 msg)에서 1000/1000, 2000 clients × 20 msg
-    (총 40,000 echo) 순간 부하에서 40000/40000, 300 clients 지속 부하에서 3000/3000
-    echo 성공
-  - `top -H` 스레드별 CPU 측정으로 job queue가 아니라 reactor 스레드 하나가
-    병목이라는 것을 확인
-  - AddressSanitizer + LeakSanitizer로 반복 연결/해제 부하 후 메모리 누수 없음 확인
-  - 리뷰 과정에서 발견한 버그와 회고는 [basicdata/feedback.md](basicdata/feedback.md),
-    구체적인 버그 재현/수정은 [basicdata/troubleshooting.md](basicdata/troubleshooting.md)의
-    v5 항목 참고
+- [개발 로드맵](basicdata/roadmap.md)
+- [버전별 벤치마크](basicdata/benchmark.md)
+- [문제 재현과 해결 기록](basicdata/troubleshooting.md)
+- [학습 내용](basicdata/learnings.md)
+- [구현 피드백](basicdata/feedback.md)
 
-- [x] **v6** — Windows IOCP 기반 비동기 I/O 서버 완료
-  - `AcceptEx()` 16개를 선게시하고, 세션과 Accept/Recv/Send 작업별 context를 분리해
-    `WSARecv()`/`WSASend()` completion으로 echo를 처리
-  - 세션별 순서 보장 송신 큐, Recv/Send 동시 진행, partial send continuation,
-    pending I/O 주기 진단·drain 후 worker join까지 구현
-  - `CONTAINING_RECORD`로 작업 context를 복원하고, `Info`/`Debug`/`Error` 로그 레벨과
-    mutex 기반 단일 로그 출력 지점을 적용
-  - native Windows 일반 빌드에서 200 clients × 10 msg(2000/2000), MSVC AddressSanitizer
-    빌드에서 50 clients × 20 msg(1000/1000), 강제 부분 전송 4 MiB echo 성공
-  - GitHub Actions의 Windows runner에서 일반/강제 partial send/MSVC AddressSanitizer
-    3개 작업으로 echo와 pending-send 종료 회귀 테스트 통과
-  - 상세 구조, 빌드 명령과 부분 전송 테스트 방법은 [v6 README](server/v6/README.md) 참고
+## 빠른 시작
 
-- [ ] **v7** — IOCP + 워커/game logic queue
+저장소를 clone한 뒤 운영체제에 맞는 실행 파일을 사용합니다.
+
+### macOS
+
+Finder에서 `Start Server Lab.command`를 더블클릭하거나 터미널에서 실행합니다.
+
+```bash
+./start.sh
+```
+
+Qt가 없으면 Homebrew로 설치합니다. Docker가 준비되어 있으면 Linux 전용 v4~v5 이미지도 자동으로 빌드합니다. 처음 실행할 때는 Qt 배포와 앱 서명 때문에 시간이 걸릴 수 있으며, CLI에 현재 단계와 경과 시간이 표시됩니다.
+
+### Linux
+
+```bash
+./start.sh
+```
+
+지원하는 패키지 관리자에서는 Qt 개발 패키지를 자동으로 설치합니다. GUI가 필요하므로 데스크톱 환경이 있어야 합니다.
+
+### Windows
+
+`Start Server Lab.bat`을 더블클릭하거나 PowerShell에서 실행합니다.
+
+```powershell
+.\start.ps1
+```
+
+Qt가 없으면 프로젝트의 `.tools/Qt` 아래에 자동으로 설치하고 `windeployqt`로 실행 파일에 필요한 구성요소를 배포합니다.
+
+빌드와 테스트만 실행하고 GUI를 띄우지 않으려면 다음 명령을 사용합니다.
+
+```bash
+./start.sh --no-launch
+```
+
+## GUI 사용법
+
+1. 왼쪽 목록에서 서버 버전을 선택합니다.
+2. 구조, 예상 현상과 현재 OS에서의 실행 가능 여부를 확인합니다.
+3. `이 버전으로 실험방 시작`을 누릅니다. 실행 파일이 없으면 선택한 버전을 자동으로 빌드합니다.
+4. 오른쪽에서 접속할 클라이언트 수를 지정하고 `클라이언트 연결`을 누릅니다.
+5. 클라이언트 목록에서 항목을 선택해 직접 전송, 지연 1회 전송 또는 반복 전송을 시험합니다.
+6. 실행 중인 서버는 `방 종료` 버튼으로 정리합니다.
+
+클라이언트가 많아져도 창이 늘어나지 않도록 고정 너비 목록과 세로 스크롤을 사용합니다. `●`는 연결 상태, `○`는 연결 종료 상태이며 검색창에서 클라이언트 번호를 찾을 수 있습니다.
+
+`랜덤 자동 메시지`를 선택하면 각 클라이언트에 테스트 메시지, 1~5초 간격, 지연 1회 또는 반복 전송 방식이 무작위로 지정됩니다.
+
+### 공통 채팅 화면의 의미
+
+v1~v6은 채팅 서버가 아니라 TCP Echo 서버입니다. `Lab 공통 채팅`은 서버의 Echo 응답이 실제로 도착한 메시지만 시간순으로 모아 보여주는 집계 화면입니다. 개별 클라이언트 화면에는 해당 소켓의 실제 `SEND`, `RECV`, `ERROR`만 표시하므로 서버가 다른 클라이언트에게 메시지를 방송하는 것처럼 보이지 않습니다.
+
+예를 들어 v1에서 Client 1이 연결된 동안 Client 2가 메시지를 보내면 `SEND`는 기록될 수 있지만 Echo 응답은 오지 않습니다. Client 1을 종료해 서버가 다음 연결을 처리해야 Client 2의 응답이 공통 채팅에 나타납니다.

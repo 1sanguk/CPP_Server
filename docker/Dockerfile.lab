@@ -1,0 +1,12 @@
+FROM ubuntu:24.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+COPY server /src/server
+RUN cmake -S /src/server -B /build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build --target v4_server v5_server --parallel
+
+FROM ubuntu:24.04
+COPY --from=builder /build/v4/v4_server /opt/server/v4/v4_server
+COPY --from=builder /build/v5/v5_server /opt/server/v5/v5_server
+EXPOSE 9000
