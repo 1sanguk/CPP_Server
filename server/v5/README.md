@@ -129,8 +129,9 @@ sequenceDiagram
 ## 테스트/QA
 
 - 빌드 `-Wall -Wextra` 경고 없음, 단일/동시 접속 echo, `SIGTERM` graceful shutdown 확인
-- 부하: 50 clients × 20 msg 1000/1000, 2000 clients × 20 msg(40,000 echo) 순간 부하 40000/40000,
-  300 clients 30초 지속 부하 3000/3000 전부 성공
+- 부하: 50 clients × 20 msg 1000/1000, 28,000 clients × 20 msg(560,000 echo) 560000/560000 전부 성공
+- 30,000 clients 시도에서는 클라이언트 임시 포트가 먼저 소진됐으며, 연결된 28,231 clients의 echo는 모두 성공
+- 300 clients 30초 지속 부하 3000/3000 전부 성공
 - `top -H` 스레드별 CPU 측정: job queue 자체는 병목이 아니고(`Queued: 0` 대부분), reactor 스레드 하나가 모든
   I/O를 처리하는 구조 자체가 병목 — v5가 의도한 설계("reactor는 I/O만 담당")의 당연한 한계
 - AddressSanitizer + LeakSanitizer: 120개 연결·1800개 echo 반복 후 메모리 누수/안전성 에러 없음
