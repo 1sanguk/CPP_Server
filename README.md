@@ -15,6 +15,7 @@ C++ 네트워크 서버를 v1부터 단계적으로 구현하고, GUI에서 버�
 | v5 | [epoll reactor + worker pool](server/v5/README.md) | 완료 |
 | v6 | [Windows IOCP completion I/O](server/v6/README.md) | 완료 |
 | v7 | [IOCP + game logic queue 채팅](server/v7/README.md) | 완료 |
+| v8 | 틱 기반 게임 루프 + 격자 AOI | 예정 |
 
 ```mermaid
 flowchart LR
@@ -24,15 +25,16 @@ flowchart LR
     V4 -->|"I/O와 작업 분리"| V5["v5<br/>reactor + workers"]
     V5 -. "Windows 비교" .-> V6["v6<br/>IOCP completion"]
     V6 -->|"게임 로직 분리"| V7["v7<br/>IOCP + logic queue"]
+    V7 -->|"틱 처리와 시야 제한"| V8["v8<br/>tick loop + AOI"]
 ```
 
 ## 운영체제별 실행 범위
 
 | 호스트 | Native | Docker | 실행 불가 또는 미구현 |
 |---|---|---|---|
-| macOS | v1~v3 | v4~v5 | v6~v7 |
-| Linux | v1~v5 | 필요 없음 | v6~v7 |
-| Windows | v6~v7 | 현재 GUI에서 미지원 | v1~v5 |
+| macOS | v1~v3 | v4~v5 | v6~v8 |
+| Linux | v1~v5 | 필요 없음 | v6~v8 |
+| Windows | v6~v7 | 현재 GUI에서 미지원 | v1~v5, v8(미구현) |
 
 v4~v5는 Linux의 `epoll`과 `eventfd`, v6는 Windows의 Winsock2와 IOCP를 사용하므로 플랫폼별 실행 범위가 다릅니다. 선택할 수 없는 버전도 구조와 설명은 GUI에서 확인할 수 있습니다.
 
