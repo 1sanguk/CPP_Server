@@ -38,7 +38,8 @@ std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available){
         {4,"v4 epoll reactor","v4_server","single-thread epoll","한 reactor가 여러 socket을 처리",true},
         {5,"v5 epoll + workers","v5_server","reactor and worker pool","reactor 병목과 worker queue 상태 관찰",true},
         {6,"v6 IOCP","v6_server","Windows completion I/O","요청 후 completion worker가 결과 처리",true},
-        {7,"v7 IOCP + game logic","v7_server","IOCP and logic queue","network와 game logic queue 분리",false},
+        {7,"v7 IOCP + game logic","v7_server","IOCP workers + single game logic thread",
+            "길이 헤더 패킷을 조립해 logic 스레드가 방 전체에 채팅 방송",true},
     };
     std::vector<ServerEntry> result;
     for(const auto& descriptor : descriptors){

@@ -10,9 +10,12 @@ else()
     add_compile_options(-Wall -Wextra)
 endif()
 
+enable_testing()
+
 if(WIN32)
-    # v6는 native Windows의 Winsock2/IOCP 학습 트랙이다.
+    # v6~v7은 native Windows의 Winsock2/IOCP 학습 트랙이다.
     add_subdirectory(v6)
+    add_subdirectory(v7)
 else()
     # v1~v3는 POSIX/BSD socket API를 사용해 macOS와 Linux에서 빌드한다.
     add_subdirectory(v1)

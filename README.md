@@ -14,7 +14,7 @@ C++ 네트워크 서버를 v1부터 단계적으로 구현하고, GUI에서 버�
 | v4 | [단일 epoll reactor](server/v4/README.md) | 완료 |
 | v5 | [epoll reactor + worker pool](server/v5/README.md) | 완료 |
 | v6 | [Windows IOCP completion I/O](server/v6/README.md) | 완료 |
-| v7 | IOCP + game logic queue | 예정 |
+| v7 | [IOCP + game logic queue 채팅](server/v7/README.md) | 완료 |
 
 ```mermaid
 flowchart LR
@@ -30,9 +30,9 @@ flowchart LR
 
 | 호스트 | Native | Docker | 실행 불가 또는 미구현 |
 |---|---|---|---|
-| macOS | v1~v3 | v4~v5 | v6, v7 |
-| Linux | v1~v5 | 필요 없음 | v6, v7 |
-| Windows | v6 | 현재 GUI에서 미지원 | v1~v5, v7 |
+| macOS | v1~v3 | v4~v5 | v6~v7 |
+| Linux | v1~v5 | 필요 없음 | v6~v7 |
+| Windows | v6~v7 | 현재 GUI에서 미지원 | v1~v5 |
 
 v4~v5는 Linux의 `epoll`과 `eventfd`, v6는 Windows의 Winsock2와 IOCP를 사용하므로 플랫폼별 실행 범위가 다릅니다. 선택할 수 없는 버전도 구조와 설명은 GUI에서 확인할 수 있습니다.
 
@@ -108,6 +108,6 @@ Qt가 없으면 프로젝트의 `.tools/Qt` 아래에 자동으로 설치하고 
 
 ### 공통 채팅 화면의 의미
 
-v1~v6은 채팅 서버가 아니라 TCP Echo 서버입니다. `Lab 공통 채팅`은 서버의 Echo 응답이 실제로 도착한 메시지만 시간순으로 모아 보여주는 집계 화면입니다. 개별 클라이언트 화면에는 해당 소켓의 실제 `SEND`, `RECV`, `ERROR`만 표시하므로 서버가 다른 클라이언트에게 메시지를 방송하는 것처럼 보이지 않습니다.
+v1~v6은 채팅 서버가 아니라 TCP Echo 서버입니다. v7은 길이 헤더 패킷을 쓰는 채팅 서버이며, v7을 선택하면 GUI 클라이언트도 패킷 프로토콜로 동작하고 공통 채팅에는 각 방송을 발신자 기준으로 한 번씩 표시합니다. `Lab 공통 채팅`은 서버의 Echo 응답이 실제로 도착한 메시지만 시간순으로 모아 보여주는 집계 화면입니다. 개별 클라이언트 화면에는 해당 소켓의 실제 `SEND`, `RECV`, `ERROR`만 표시하므로 서버가 다른 클라이언트에게 메시지를 방송하는 것처럼 보이지 않습니다.
 
 예를 들어 v1에서 Client 1이 연결된 동안 Client 2가 메시지를 보내면 `SEND`는 기록될 수 있지만 Echo 응답은 오지 않습니다. Client 1을 종료해 서버가 다음 연결을 처리해야 Client 2의 응답이 공통 채팅에 나타납니다.

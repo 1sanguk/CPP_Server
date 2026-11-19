@@ -150,6 +150,7 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ### v7 — IOCP + 워커/game logic queue 결합
 
+- **상태**: 완료
 - **목표**: IOCP worker가 네트워크 완료를 처리하고 실제 게임 로직은 별도 job queue에서
   실행하도록 역할을 분리한다.
 - **구현 세부사항**:
@@ -163,6 +164,18 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
   - 동일 세션의 패킷 처리 순서와 여러 세션의 병렬 처리 확인
   - I/O completion queue와 game job queue 길이 및 병목 측정
   - v5 Linux 구조와 동일 부하에서 처리량, 지연시간, 스레드 수, 메모리 비교
+
+- **완료 결과 (2026-11-19)**:
+  - `[uint16 size][uint16 id][body]` 길이 헤더 패킷과 세션별 `PacketAssembler`로 TCP 스트림을 패킷 단위로 조립
+  - completion worker는 조립한 패킷을 bounded `GameJobQueue`(65,536)에 넣고, 단일 game logic 스레드가
+    방 상태를 소유하며 입장/퇴장 알림과 채팅을 방송
+  - Enter를 첫 Recv 게시 전에 넣어 세션별 처리 순서를 보장하고, 브로드캐스트 버퍼는 공유 포인터로 재사용
+  - 종료 시 job 큐 Close → logic 스레드 join → v6와 같은 pending I/O 취소·drain → IOCP worker join
+  - 50 clients × 20 msg(50,000건 전달)와 200 clients × 10 msg(400,000건 전달)에서 발신자별 순서 유지,
+    1바이트 분할 패킷, 비정상 헤더 종료, 느린 클라이언트 송신 큐 상한, ASan 빌드 종료 시나리오 통과
+  - GUI 클라이언트에 v7 패킷 모드를 추가하고 카탈로그에서 v7을 실행 가능으로 변경
+  - v5와 같은 부하 스크립트(`basicdata/tools/compare_v5_v7.py`)로 지연시간, 처리량, 스레드 수, 메모리를
+    비교했다(결과는 benchmark.md). 연속 소패킷 처리량과 연결당 메모리는 feedback.md에 `[미적용]`으로 남겼다
 
 각 버전은 `server/` 아래 `v1`, `v2` 등 버전별 하위 폴더(`include`/`src`/`CMakeLists.txt`)로 분리하고, 최상위 `server/CMakeLists.txt`가 `add_subdirectory()`로 각 버전을 불러온다. 버전마다 독립된 실행 파일(`v1_server`, `v2_server`, ...)로 빌드되어 언제든 원하는 버전을 골라 실행할 수 있다.
 
@@ -204,4 +217,4 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 - [x] v4 — epoll 기반 이벤트 루프
 - [x] v5 — 이벤트 루프 + 워커 스레드 풀 결합
 - [x] v6 — Windows IOCP 기반 비동기 I/O 서버
-- [ ] v7 — IOCP + 워커/game logic queue 결합
+- [x] v7 — IOCP + 워커/game logic queue 결합

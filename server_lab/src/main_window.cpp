@@ -200,6 +200,11 @@ void MainWindow::Stop_Room(){
         });
         connect(stop, QOverload<int,QProcess::ExitStatus>::of(&QProcess::finished), stop, &QObject::deleteLater);
         stop->start();
+    }else if(Detect_Host_Os() == HostOs::Windows){
+        // v6~v7 콘솔 서버는 Enter 입력으로 graceful shutdown을 시작한다. Windows의 terminate()는
+        // 콘솔 프로그램에 전달되지 않아 3초 뒤 강제 종료(kill)로 끝나므로 표준 입력으로 줄바꿈을 보낸다.
+        process->write("\n");
+        process->closeWriteChannel();
     }else{
         process->terminate();
     }
@@ -265,6 +270,7 @@ void MainWindow::Start_Room(){
     int row = version_list->currentRow();
     if(row < 0) return;
     const auto& entry = catalog[static_cast<std::size_t>(row)];
+    client_panel->Set_Server_Version(entry.descriptor.version);
     if(entry.execution_mode == ExecutionMode::Docker){
         auto* process = new QProcess(this);
         const QString container_name = QString("cpp-server-lab-v%1-%2")

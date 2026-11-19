@@ -15,17 +15,27 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QtEndian>
 #include <functional>
 
 namespace{
+// server/v7/include/packet.h와 같은 값이어야 한다. [uint16 size][uint16 id][body], little-endian.
+constexpr int kHeaderSize = 4;
+constexpr int kMaxPacketSize = 8 * 1024;
+constexpr quint16 kClientChat = 1;
+constexpr quint16 kServerWelcome = 101;
+constexpr quint16 kServerChat = 102;
+constexpr quint16 kServerNotice = 103;
+
 class ClientTab : public QWidget{
 public:
     using ChatCallback = std::function<void(int, const QString&)>;
     using StatusCallback = std::function<void(int, bool)>;
 
-    ClientTab(int number, ChatCallback chat_callback, StatusCallback status_callback, QWidget* parent = nullptr)
-        : QWidget(parent), number(number), chat_callback(std::move(chat_callback)),
-          status_callback(std::move(status_callback)){
+    ClientTab(int number, bool packet_protocol, ChatCallback chat_callback, StatusCallback status_callback,
+        QWidget* parent = nullptr)
+        : QWidget(parent), number(number), packet_protocol(packet_protocol),
+          chat_callback(std::move(chat_callback)), status_callback(std::move(status_callback)){
         auto* layout = new QVBoxLayout(this);
         state = new QLabel("연결 중...", this);
         log = new QPlainTextEdit(this);
@@ -79,6 +89,10 @@ public:
             this->status_callback(this->number, false);
         });
         connect(socket, &QTcpSocket::readyRead, this, [this]{
+            if(this->packet_protocol){
+                Read_Packets();
+                return;
+            }
             const QString echoed = QString::fromUtf8(socket->readAll());
             Append("RECV", echoed);
             this->chat_callback(this->number, echoed);
@@ -151,8 +165,59 @@ private:
             Append("SEND 실패 — 연결되지 않음", text);
             return;
         }
-        socket->write(text.toUtf8());
+        if(!packet_protocol){
+            socket->write(text.toUtf8());
+            Append("SEND", text);
+            return;
+        }
+
+        const QByteArray body = text.toUtf8();
+        if(body.size() > kMaxPacketSize - kHeaderSize){
+            Append("SEND 실패 — 메시지가 너무 김", text);
+            return;
+        }
+        QByteArray packet(kHeaderSize, Qt::Uninitialized);
+        qToLittleEndian<quint16>(static_cast<quint16>(kHeaderSize + body.size()), packet.data());
+        qToLittleEndian<quint16>(kClientChat, packet.data() + 2);
+        packet.append(body);
+        socket->write(packet);
         Append("SEND", text);
+    }
+
+    // TCP 스트림에서 완성된 패킷만 잘라 처리한다. 서버의 PacketAssembler와 같은 규칙이다.
+    void Read_Packets(){
+        recv_buffer.append(socket->readAll());
+        while(recv_buffer.size() >= kHeaderSize){
+            const int size = qFromLittleEndian<quint16>(recv_buffer.constData());
+            if(size < kHeaderSize || size > kMaxPacketSize){
+                Append("ERROR", QString("잘못된 패킷 크기 %1 — 연결을 끊습니다").arg(size));
+                recv_buffer.clear();
+                socket->abort();
+                return;
+            }
+            if(recv_buffer.size() < size) return;
+            const quint16 id = qFromLittleEndian<quint16>(recv_buffer.constData() + 2);
+            const QByteArray body = recv_buffer.mid(kHeaderSize, size - kHeaderSize);
+            recv_buffer.remove(0, size);
+            Handle_Packet(id, body);
+        }
+    }
+
+    void Handle_Packet(quint16 id, const QByteArray& body){
+        if(id == kServerWelcome && body.size() >= 4){
+            session_id = qFromLittleEndian<quint32>(body.constData());
+            Append("WELCOME", QString("Session %1로 입장").arg(session_id));
+        }else if(id == kServerChat && body.size() >= 4){
+            const quint32 sender = qFromLittleEndian<quint32>(body.constData());
+            const QString text = QString::fromUtf8(body.mid(4));
+            Append("RECV", QString("[Session %1] %2").arg(sender).arg(text));
+            // 같은 방송을 모든 클라이언트가 받으므로, 공통 채팅에는 발신자가 받은 사본만 한 번 기록한다.
+            if(sender == session_id) chat_callback(number, text);
+        }else if(id == kServerNotice){
+            Append("NOTICE", QString::fromUtf8(body));
+        }else{
+            Append("ERROR", QString("알 수 없는 패킷 id %1").arg(id));
+        }
     }
 
     void Append(const QString& event, const QString& text = {}){
@@ -163,6 +228,9 @@ private:
     }
 
     int number;
+    bool packet_protocol;
+    QByteArray recv_buffer;
+    quint32 session_id = 0;
     QLabel* state;
     QPlainTextEdit* log;
     QLineEdit* message;
@@ -204,8 +272,7 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
     auto* shared_panel = new QWidget(content);
     auto* shared_layout = new QVBoxLayout(shared_panel);
     auto* shared_title = new QLabel("Lab 공통 채팅", shared_panel);
-    auto* shared_note = new QLabel(
-        "서버의 Echo 응답이 도착한 메시지만 이곳에 모아 표시합니다. 개별 화면에는 실제 SEND/RECV만 표시됩니다.", shared_panel);
+    shared_note = new QLabel(shared_panel);
     shared_note->setWordWrap(true);
     shared_chat = new QPlainTextEdit(shared_panel);
     shared_chat->setReadOnly(true);
@@ -245,7 +312,27 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
             item->setHidden(!item->text().contains(query, Qt::CaseInsensitive));
         }
     });
+    Set_Server_Version(0);
     Set_Room_Active(false);
+}
+
+bool ClientPanel::Uses_Packet_Protocol() const{
+    return server_version >= 7;
+}
+
+QString ClientPanel::Idle_Message() const{
+    return Uses_Packet_Protocol()
+        ? "먼저 실험방을 시작하세요. v7은 채팅 패킷을 방 전체에 방송합니다."
+        : "먼저 실험방을 시작하세요. 각 연결은 Echo 응답을 독립적으로 표시합니다.";
+}
+
+void ClientPanel::Set_Server_Version(int version){
+    server_version = version;
+    shared_note->setText(Uses_Packet_Protocol()
+        ? "v7 채팅 서버가 방 전체에 방송한 메시지를 발신자 기준으로 한 번씩 표시합니다. "
+          "개별 화면에는 다른 클라이언트의 채팅과 입장/퇴장 알림까지 실제로 받은 패킷이 모두 표시됩니다."
+        : "서버의 Echo 응답이 도착한 메시지만 이곳에 모아 표시합니다. 개별 화면에는 실제 SEND/RECV만 표시됩니다.");
+    if(!room_active) state_label->setText(Idle_Message());
 }
 
 ClientPanel::~ClientPanel(){
@@ -268,7 +355,7 @@ void ClientPanel::Set_Room_Active(bool active){
         state_label->setText("실험방 실행 중 — 접속 수를 정하고 클라이언트를 연결하세요.");
     }else{
         Disconnect_Clients();
-        state_label->setText("먼저 실험방을 시작하세요. 각 연결은 Echo 응답을 독립적으로 표시합니다.");
+        state_label->setText(Idle_Message());
     }
 }
 
@@ -277,7 +364,7 @@ void ClientPanel::Create_Clients(){
     Disconnect_Clients();
     shared_chat->clear();
     for(int i = 1; i <= client_count->value(); ++i){
-        auto* client = new ClientTab(i, [this](int sender, const QString& text){
+        auto* client = new ClientTab(i, Uses_Packet_Protocol(), [this](int sender, const QString& text){
             Broadcast_Chat(sender, text);
         }, [this](int client_number, bool connected){
             auto* item = client_list->item(client_number - 1);
