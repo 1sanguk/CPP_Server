@@ -4,7 +4,7 @@ namespace{
 bool Supports(int version, HostOs os){
     if(os == HostOs::Linux) return version >= 1 && version <= 5;
     if(os == HostOs::MacOs) return version >= 1 && version <= 3;
-    if(os == HostOs::Windows) return version == 6 || version == 7;
+    if(os == HostOs::Windows) return version >= 6 && version <= 8;
     return false;
 }
 }
@@ -40,6 +40,8 @@ std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available){
         {6,"v6 IOCP","v6_server","Windows completion I/O","요청 후 completion worker가 결과 처리",true},
         {7,"v7 IOCP + game logic","v7_server","IOCP workers + single game logic thread",
             "길이 헤더 패킷을 조립해 logic 스레드가 방 전체에 채팅 방송",true},
+        {8,"v8 Tick + AOI","v8_server","20Hz tick loop + grid AOI",
+            "틱마다 주변 셀 플레이어에게만 이동·입장·퇴장을 묶어 전송",true},
     };
     std::vector<ServerEntry> result;
     for(const auto& descriptor : descriptors){

@@ -1,16 +1,7 @@
 name: v6 Windows IOCP
 
+# 학습 프로젝트라 push/PR마다 자동으로 돌리지 않고, 필요할 때 GitHub Actions 화면에서 직접 실행한다.
 on:
-  push:
-    paths:
-      - "server/CMakeLists.txt"
-      - "server/v6/**"
-      - ".github/workflows/v6-windows.yml"
-  pull_request:
-    paths:
-      - "server/CMakeLists.txt"
-      - "server/v6/**"
-      - ".github/workflows/v6-windows.yml"
   workflow_dispatch:
 
 jobs:

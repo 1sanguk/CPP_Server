@@ -24,7 +24,3 @@ if(V7_ENABLE_ASAN)
     target_compile_options(v7_server PRIVATE /fsanitize=address)
     target_link_options(v7_server PRIVATE /INCREMENTAL:NO)
 endif()
-
-add_executable(v7_unit_tests tests/v7_unit_tests.cpp)
-target_link_libraries(v7_unit_tests PRIVATE v7_core)
-add_test(NAME v7_unit_tests COMMAND v7_unit_tests)

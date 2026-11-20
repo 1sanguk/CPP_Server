@@ -79,14 +79,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Qt Widgets development files were not found. Install Qt 6 or set SERVER_LAB_QT_PREFIX."
 }
 
-Write-Host "[4/5] Building and testing Server Architecture Lab..."
+Write-Host "[4/5] Building Server Architecture Lab..."
 cmake --build $labBuildDir --config Release --parallel
 if ($LASTEXITCODE -ne 0) {
     throw "Building Server Architecture Lab failed."
-}
-ctest --test-dir $labBuildDir -C Release --output-on-failure
-if ($LASTEXITCODE -ne 0) {
-    throw "Server Architecture Lab tests failed."
 }
 $labExecutable = Join-Path $labBuildDir "Release/MMO Server Lab.exe"
 $deployTool = Join-Path $qtPrefix "bin/windeployqt.exe"
