@@ -199,10 +199,18 @@ public:
         wander_timer = new QTimer(this);
         wander_timer->setSingleShot(true);
         connect(wander_timer, &QTimer::timeout, this, [this]{ if(wandering) Pick_Wander_Direction(); });
+        // v8 서버는 일정 시간(V8_INPUT_TIMEOUT_MS, 기본 500ms) 이동 입력이 없으면 멈추므로,
+        // 움직이는 동안에는 100ms마다 현재 속도를 다시 보낸다.
+        move_keepalive = new QTimer(this);
+        move_keepalive->setInterval(100);
+        connect(move_keepalive, &QTimer::timeout, this, [this]{
+            if(current_vx != 0.0f || current_vy != 0.0f) Send_Move(current_vx, current_vy);
+        });
         connect(socket, &QTcpSocket::connected, this, [this]{ Log(Kind::Info, "서버에 연결됨"); Refresh(); });
         connect(socket, &QTcpSocket::disconnected, this, [this]{
             auto_timer->stop();
             wander_timer->stop();
+            move_keepalive->stop();
             wandering = false;
             Log(Kind::Info, "연결 종료");
             Refresh();
@@ -339,11 +347,17 @@ public:
         socket->write(Make_Packet(kClientMove, body));
         current_vx = vx;
         current_vy = vy;
+        if(vx != 0.0f || vy != 0.0f){
+            if(!move_keepalive->isActive()) move_keepalive->start();
+        }else{
+            move_keepalive->stop();
+        }
     }
 
     void Disconnect(){
         auto_timer->stop();
         wander_timer->stop();
+        move_keepalive->stop();
         wandering = false;
         socket->disconnectFromHost();
         if(socket->state() != QAbstractSocket::UnconnectedState) socket->abort();
@@ -557,6 +571,7 @@ private:
     QTimer* auto_timer;
     // v8 돌아다니기 상태
     QTimer* wander_timer;
+    QTimer* move_keepalive;
     bool wandering = false;
     float current_vx = 0.0f;
     float current_vy = 0.0f;

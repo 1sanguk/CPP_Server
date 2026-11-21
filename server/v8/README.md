@@ -67,6 +67,10 @@ game logic을 틱 루프와 월드로 바꿨다.
 - **입력 합치기**: 이동 입력은 속도 상태를 덮어쓰므로 같은 틱에 여러 번 와도 마지막 값(과 그 순번)만 남는다.
 - **채팅 속도 제한**: 세션마다 틱당 채팅 수(`V8_CHATS_PER_TICK`, 기본 4)를 넘으면 버리고 `chats_dropped`로 센다.
   틱 끝에 한 번에 돌려주는 구조라, 제한이 없으면 한 틱에 몰아 보낸 채팅이 발신자 자신의 송신 큐 상한을 넘긴다.
+- **입력 만료** (Unity 클라이언트 M1a에서 추가): 서버는 마지막 속도를 계속 적용하므로, 모바일 앱이 정지 패킷을 못 보내고
+  멈추거나 끊기면 캐릭터가 계속 걷는다. `V8_INPUT_TIMEOUT_MS`(기본 500ms) 동안 `C_Move`가 없으면 틱 루프가 속도를 0으로 만든다
+  (`Expire_Idle_Inputs`, `[Status]`의 `inputs_expired`). 응답 순번은 마지막 입력 순번을 그대로 둔다.
+  그래서 클라이언트는 움직이는 동안 50~100ms마다 현재 속도를 다시 보낸다(Server Lab GUI는 100ms).
 
 ## 격자 AOI
 
@@ -101,6 +105,8 @@ game logic을 틱 루프와 월드로 바꿨다.
 | `V8_STATUS_INTERVAL_MS` | 10000 | `[Status]` 출력 간격 |
 | `V8_JOB_HIGH_WATERMARK` / `V8_JOB_LOW_WATERMARK` | 8192 / 1024 | Recv 일시정지 수위 |
 | `V8_CHATS_PER_TICK` | 4 | 세션별 틱당 채팅 수 상한 |
+| `V8_INPUT_TIMEOUT_MS` | 500 | 이 시간 동안 `C_Move`가 없으면 그 플레이어를 멈춘다(입력 만료). 0이면 끔. 틱 수로 올림 |
+| `V8_SPAWN_X` / `V8_SPAWN_Y` / `V8_SPAWN_RADIUS` | 없음 | 셋 다 있으면 무작위 스폰 대신 그 원 안에 스폰(개발용). 없으면 무작위 |
 
 `[Status]`의 `phase_avg_us=input/step/collect/encode/send`는 틱 한 번의 단계별 평균 시간이다.
 

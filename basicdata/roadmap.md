@@ -261,6 +261,14 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 기획한대로 구현한 서버를 AI에게 피드백 받아 어떤 점이 부족했는지 확인하기 위한 기록.
 → [basicdata/feedback.md](feedback.md)
 
+## 게임 (마을 꾸미기) / Unity 클라이언트
+서버 위에 실제 모바일 게임을 올린다. 모두가 한 마을에 살며 자기 집을 자유 배치로 꾸미고 이웃집에 놀러 가는 소셜 게임.
+Android 먼저, Unity 2022.3, 프로젝트는 저장소 밖 `D:\unity\Project\CppServerClient`.
+단계: M1a 폰 접속 / M1b 여러 명(v8 + 입력 만료) → M2a~c 내 집 열기·꾸미기·남기기(v9: 로그인·SQLite·DB 스레드·배치 판정)
+→ M3 놀러 가기(v10: 공간 이동·방문·편집 방송) → M4 마을(v11: 부지·세션 복구) → M5 생활(채널·경제·Linux 이식은 별도).
+→ 게임은 별도 저장소 `cpp_server_unity`(v8을 가져와 v9부터 확장)에서 진행한다. 기획 문서도 그쪽 `docs/`로 옮겼다
+  (`game_plan.md`, `unity_client_plan.md`).
+
 ## 빌드 도구 / 에디터
 - cmake + Homebrew 설치 완료. `server/` 아래에서 `cmake -S . -B build && cmake --build build`로 빌드.
 - 개발은 맥북 + Windows 두 컴퓨터에서 진행할 예정. Visual Studio 2022/2026은 Windows 전용이라 맥에서는 사용 불가 ("Visual Studio for Mac"은 단종되었고 애초에 C++용도 아니었음) → 맥에서는 **VS Code**(CMake 확장)를 사용한다.

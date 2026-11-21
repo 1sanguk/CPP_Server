@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -42,6 +43,8 @@ std::uint64_t Elapsed_Us(std::chrono::steady_clock::time_point from, std::chrono
 constexpr int kDefaultStatusIntervalMs = 10000;
 // 세션 하나가 한 틱에 보낼 수 있는 채팅 수(20Hz면 초당 80개)
 constexpr int kDefaultChatsPerTick = 4;
+// 이 시간 동안 C_Move가 없으면 멈춘다. 클라이언트는 움직이는 동안 50~100ms마다 현재 속도를 다시 보낸다.
+constexpr int kDefaultInputTimeoutMs = 500;
 
 ClientSession::ClientSession(SOCKET socket_value, std::uint32_t id)
     : client_socket(socket_value), session_id(id),
@@ -55,6 +58,9 @@ IocpWorldServer::IocpWorldServer(int port)
           Read_Number_From_Env("V8_STATUS_INTERVAL_MS", kDefaultStatusIntervalMs, 100, 3600000))),
       world(Read_World_Config_From_Env()),
       chats_per_tick(static_cast<std::uint32_t>(Read_Number_From_Env("V8_CHATS_PER_TICK", kDefaultChatsPerTick, 1, 1000000))),
+      input_timeout_ticks(Input_Timeout_Ticks(
+          Read_Number_From_Env("V8_INPUT_TIMEOUT_MS", kDefaultInputTimeoutMs, 0, 600000), tick_period.count())),
+      spawn_area(Read_Spawn_Area_From_Env()),
       job_high_watermark(static_cast<std::size_t>(Read_Number_From_Env("V8_JOB_HIGH_WATERMARK",
           static_cast<double>(kDefaultJobHighWatermark), 2, static_cast<double>(kGameJobCapacity - 1)))),
       job_low_watermark((std::min)(static_cast<std::size_t>(Read_Number_From_Env("V8_JOB_LOW_WATERMARK",
@@ -106,6 +112,40 @@ World::Config IocpWorldServer::Read_World_Config_From_Env(){
     config.max_speed = static_cast<float>(Read_Number_From_Env("V8_MAX_SPEED", config.max_speed, 0, 100000));
     config.seed = static_cast<std::uint32_t>(Read_Number_From_Env("V8_SEED", config.seed, 0, 4294967295.0));
     return config;
+}
+
+std::optional<IocpWorldServer::SpawnArea> IocpWorldServer::Read_Spawn_Area_From_Env(){
+    // 셋 중 하나라도 없거나 범위 밖이면(-1로 표시) 지정 스폰을 쓰지 않는다.
+    const double x = Read_Number_From_Env("V8_SPAWN_X", -1, 0, 100000);
+    const double y = Read_Number_From_Env("V8_SPAWN_Y", -1, 0, 100000);
+    const double radius = Read_Number_From_Env("V8_SPAWN_RADIUS", -1, 0, 100000);
+    if(x < 0 || y < 0 || radius < 0){
+        return std::nullopt;
+    }
+    return SpawnArea{static_cast<float>(x), static_cast<float>(y), static_cast<float>(radius)};
+}
+
+std::uint64_t IocpWorldServer::Input_Timeout_Ticks(double timeout_ms, long long tick_ms){
+    if(!(timeout_ms > 0.0) || tick_ms <= 0){
+        return 0;
+    }
+    const auto ticks = static_cast<std::uint64_t>(std::ceil(timeout_ms / static_cast<double>(tick_ms)));
+    return (std::max)(std::uint64_t{1}, ticks);
+}
+
+void IocpWorldServer::Expire_Idle_Inputs(){
+    if(this->input_timeout_ticks == 0){
+        return;
+    }
+    for(auto& [id, session] : this->players){
+        if(!session->moving || this->current_tick - session->last_move_tick <= this->input_timeout_ticks){
+            continue;
+        }
+        // 마지막 입력 순번은 그대로 두어, 클라이언트가 보는 S_SelfState의 응답 순번이 되돌아가지 않게 한다.
+        this->world.Set_Velocity(id, 0.0f, 0.0f, session->last_input_seq);
+        session->moving = false;
+        ++this->expired_input_count;
+    }
 }
 
 void IocpWorldServer::Logging(LogLevel level, const std::string& message){
@@ -823,6 +863,8 @@ void IocpWorldServer::Game_Tick_Loop(){
         jobs.clear();
         // 큐를 비웠으므로 수신을 멈춘 세션들의 Recv를 다시 게시한다.
         this->Resume_Paused_Sessions();
+        // 오래 입력이 없는 플레이어는 멈춘다(입력 만료).
+        this->Expire_Idle_Inputs();
         const auto input_end = std::chrono::steady_clock::now();
 
         // 2) 월드 갱신: 모든 플레이어를 dt만큼 움직이고 셀이 바뀐 플레이어의 시야 진입/이탈을 기록한다.
@@ -875,7 +917,17 @@ void IocpWorldServer::Handle_Enter(const std::shared_ptr<ClientSession>& session
     if(session->closing.load()){
         return;
     }
-    const auto state = this->world.Enter(session->session_id);
+    std::optional<protocol::EntityState> state;
+    if(this->spawn_area){
+        // 개발용 지정 스폰: 원 안의 임의 위치(면적에 고르게 퍼지도록 반지름은 제곱근으로 뽑는다).
+        std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+        const float angle = unit(this->spawn_rng) * 6.2831853f;
+        const float distance = this->spawn_area->radius * std::sqrt(unit(this->spawn_rng));
+        state = this->world.Enter_At(session->session_id,
+            this->spawn_area->x + distance * std::cos(angle), this->spawn_area->y + distance * std::sin(angle));
+    }else{
+        state = this->world.Enter(session->session_id);
+    }
     if(!state){
         this->Close_Session(session);
         return;
@@ -922,6 +974,9 @@ void IocpWorldServer::Handle_Packet(const std::shared_ptr<ClientSession>& sessio
             // 클라이언트는 속도만 요청한다. 실제 위치는 틱마다 서버가 계산한다(서버 권위).
             // 입력 순번은 S_SelfState로 돌려주어 클라이언트가 예측 이동을 서버 결과로 보정할 수 있게 한다.
             this->world.Set_Velocity(session->session_id, input->velocity_x, input->velocity_y, input->input_seq);
+            session->last_move_tick = this->current_tick;
+            session->last_input_seq = input->input_seq;
+            session->moving = input->velocity_x != 0.0f || input->velocity_y != 0.0f;
             break;
         }
         case protocol::PacketId::C_Chat:{
@@ -1045,6 +1100,7 @@ void IocpWorldServer::Log_Status(){
         ", wsasend_posts=" + std::to_string(this->send_post_count.load()) +
         ", send_batches=" + std::to_string(this->send_batch_count.load()) +
         ", moves=" + std::to_string(this->move_input_count.load()) +
+        ", inputs_expired=" + std::to_string(this->expired_input_count.load()) +
         ", chats=" + std::to_string(this->chat_count.load()) +
         ", chats_dropped=" + std::to_string(this->dropped_chat_count.load()) +
         ", log_dropped=" + std::to_string(this->logger.Dropped_Count()));
@@ -1160,6 +1216,12 @@ void IocpWorldServer::Server_Run(){
         ", cell_size=" + std::to_string(static_cast<int>(config.cell_size)) +
         ", grid=" + std::to_string(this->world.Columns()) + "x" + std::to_string(this->world.Columns()) +
         ", max_speed=" + std::to_string(static_cast<int>(config.max_speed)) +
+        ", input_timeout_ticks=" + std::to_string(this->input_timeout_ticks) +
+        (this->spawn_area
+            ? ", spawn=(" + std::to_string(static_cast<int>(this->spawn_area->x)) + "," +
+              std::to_string(static_cast<int>(this->spawn_area->y)) + ") r=" +
+              std::to_string(static_cast<int>(this->spawn_area->radius))
+            : std::string(", spawn=random")) +
         ", job_high_watermark=" + std::to_string(this->job_high_watermark) +
         ", job_low_watermark=" + std::to_string(this->job_low_watermark));
     {

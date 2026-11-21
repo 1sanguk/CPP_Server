@@ -18,6 +18,8 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -93,6 +95,12 @@ struct ClientSession{
     // 틱 루프만 읽고 쓰는 틱당 채팅 수 집계(V8_CHATS_PER_TICK)
     std::uint64_t chat_tick = 0;
     std::uint32_t chats_in_tick = 0;
+
+    // 틱 루프만 읽고 쓰는 입력 만료 상태(V8_INPUT_TIMEOUT_MS). 마지막 C_Move가 온 틱, 그 입력 순번,
+    // 마지막으로 0이 아닌 속도를 요청했는지(이미 멈춘 플레이어는 다시 멈출 필요가 없다).
+    std::uint64_t last_move_tick = 0;
+    std::uint32_t last_input_seq = 0;
+    bool moving = false;
 };
 
 class IocpWorldServer{
@@ -144,6 +152,17 @@ class IocpWorldServer{
         // 아래 상태는 틱 루프 스레드만 읽고 쓰므로 mutex 없이 사용한다.
         World world;
         const std::uint32_t chats_per_tick;
+        // 입력 만료: 이만큼의 틱 동안 C_Move가 없으면 그 플레이어의 속도를 0으로 만든다. 0이면 끈다.
+        // 모바일 앱이 정지 패킷을 못 보내고 멈추거나 끊겨도 캐릭터가 계속 걷지 않게 하는 안전장치다.
+        const std::uint64_t input_timeout_ticks;
+        // 개발용 지정 스폰(V8_SPAWN_X/Y/RADIUS). 셋 다 있으면 무작위 스폰 대신 그 원 안에 스폰한다.
+        struct SpawnArea{
+            float x = 0.0f;
+            float y = 0.0f;
+            float radius = 0.0f;
+        };
+        const std::optional<SpawnArea> spawn_area;
+        std::mt19937 spawn_rng{std::random_device{}()};
         std::unordered_map<std::uint32_t, std::shared_ptr<ClientSession>> players;
         // 이번 틱에 세션별로 보낼 바이트. 틱이 끝날 때 세션마다 WSASend 요청 하나로 내보낸다.
         std::unordered_map<std::uint32_t, std::vector<char>> outbox;
@@ -165,6 +184,7 @@ class IocpWorldServer{
         std::atomic<std::uint64_t> discarded_job_count = 0;
         std::atomic<std::uint64_t> chat_count = 0;
         std::atomic<std::uint64_t> move_input_count = 0;
+        std::atomic<std::uint64_t> expired_input_count = 0;
         std::atomic<std::uint64_t> dropped_chat_count = 0;
         std::atomic<std::uint64_t> rejected_job_count = 0;
         std::atomic<std::uint64_t> recv_pause_count = 0;
@@ -233,6 +253,11 @@ class IocpWorldServer{
         // 테스트와 측정에서 틱 주기, 셀 크기, 수위 등을 환경변수로 덮어쓸 수 있다. 범위 밖이면 기본값을 쓴다.
         static double Read_Number_From_Env(const char* name, double default_value, double min_value, double max_value);
         static World::Config Read_World_Config_From_Env();
+        static std::optional<SpawnArea> Read_Spawn_Area_From_Env();
+        // 입력 만료 시간(ms)을 틱 수로 바꾼다. 0이면 0(끔), 그 밖에는 최소 1틱.
+        static std::uint64_t Input_Timeout_Ticks(double timeout_ms, long long tick_ms);
+        // 입력 만료가 지난 플레이어를 멈춘다(틱 루프에서 입력 처리 뒤, 월드 이동 전에 호출).
+        void Expire_Idle_Inputs();
 
     public:
         explicit IocpWorldServer(int port);
