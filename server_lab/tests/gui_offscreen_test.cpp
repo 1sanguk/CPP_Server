@@ -17,6 +17,7 @@
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QProcess>
 #include <QPushButton>
 #include <QSpinBox>
@@ -199,6 +200,39 @@ void Run_Version(int version, const QStringList& server_env, const std::function
             for(int i = 0; i < cards.size(); ++i) none_sent = none_sent && cards[i]->property("sent").toInt() == stopped[i];
             Check(none_sent, "auto send stopped");
         }
+
+        // v8 랜덤 이동(돌아다니기): 작은 월드에서 몇 초 돌아다니면 반드시 벽에 닿는다.
+        // 벽에 닿은 뒤에도 방향을 바꿔 계속 움직이는지, 이동 정지 후에는 멈추는지 확인한다.
+        auto* move = panel.findChild<QPushButton*>("moveButton");
+        auto* stop_move = panel.findChild<QPushButton*>("stopMoveButton");
+        if(version >= 8 && move && stop_move){
+            auto positions = [&]{
+                QList<QPointF> points;
+                for(QFrame* card : cards) points.push_back({card->property("posX").toDouble(), card->property("posY").toDouble()});
+                return points;
+            };
+            auto all_moved = [](const QList<QPointF>& a, const QList<QPointF>& b){
+                for(int i = 0; i < a.size(); ++i){
+                    if(QLineF(a[i], b[i]).length() < 1.0) return false;
+                }
+                return true;
+            };
+            sender->setCurrentIndex(0);
+            move->click();
+            Pump(5000);   // 월드 120, 속도 60이면 2초 안에 벽에 닿는다
+            const QList<QPointF> after_walls = positions();
+            Pump(1500);
+            Check(all_moved(after_walls, positions()), "random move keeps moving after hitting the wall");
+            Save(panel, shot_dir, QString("v%1_4_wander.png").arg(version));
+            stop_move->click();
+            Pump(600);
+            const QList<QPointF> stopped_at = positions();
+            Pump(1200);
+            bool none_moved = true;
+            const QList<QPointF> later = positions();
+            for(int i = 0; i < later.size(); ++i) none_moved = none_moved && QLineF(stopped_at[i], later[i]).length() < 0.5;
+            Check(none_moved, "stop move stops wandering");
+        }
     }
 
     panel.Shutdown();
@@ -234,7 +268,7 @@ int main(int argc, char** argv){
     // v7 방송: 4명 모두 받는다.
     Run_Version(7, {}, [](int){ return 1; }, shot_dir);
     // v8: 셀 하나(셀 크기 = 월드 크기)로 두면 모두 같은 시야라 전원이 받는다.
-    Run_Version(8, {"V8_CELL_SIZE=1000"}, [](int){ return 1; }, shot_dir);
+    Run_Version(8, {"V8_CELL_SIZE=1000", "V8_WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
 
     std::printf("\n%s (%d failure%s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

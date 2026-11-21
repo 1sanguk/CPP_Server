@@ -93,28 +93,32 @@ MainWindow::MainWindow() : catalog(Build_Server_Catalog(Detect_Host_Os(), Docker
     search_row->addWidget(search_only);
     search_row->addWidget(search_summary, 3);
 
-    auto* vertical = new QSplitter(Qt::Vertical, right);
-    client_panel = new ClientPanel(vertical);
-    auto* server_log_panel = new QWidget(vertical);
+    // 클라이언트 테스트(가운데)와 서버 로그(오른쪽 세로 칸)를 좌우로 나눈다. 경계를 끌어 폭을 조절한다.
+    auto* columns = new QSplitter(Qt::Horizontal, right);
+    client_panel = new ClientPanel(columns);
+    auto* server_log_panel = new QWidget(columns);
     auto* server_log_layout = new QVBoxLayout(server_log_panel);
-    server_log_layout->setContentsMargins(0, 4, 0, 0);
-    auto* server_log_title = new QLabel("서버 로그 <span style='color:#888; font-weight:normal'>— 실행 중인 서버 프로그램이 출력하는 내용"
-                                        " (위 경계를 끌어 높이 조절, 줄 선택 후 Ctrl+C 복사)</span>", server_log_panel);
+    server_log_layout->setContentsMargins(4, 0, 0, 0);
+    auto* server_log_title = new QLabel("서버 로그", server_log_panel);
     server_log_title->setObjectName("stepTitle");
-    server_log_title->setTextFormat(Qt::RichText);
+    auto* server_log_note = new QLabel("실행 중인 서버 프로그램이 출력하는 내용입니다. "
+                                       "왼쪽 경계를 끌어 폭을 조절하고, 줄을 골라 Ctrl+C로 복사할 수 있습니다.", server_log_panel);
+    server_log_note->setWordWrap(true);
+    server_log_note->setStyleSheet("QLabel{color:#888;}");
     log_view = new LogList(5000, server_log_panel);
-    log_view->setMinimumHeight(120);
     log_view->setStyleSheet("QListWidget{font-family:Consolas, 'Malgun Gothic'; font-size:12px;}");
     server_log_layout->addWidget(server_log_title);
+    server_log_layout->addWidget(server_log_note);
     server_log_layout->addWidget(log_view, 1);
-    vertical->addWidget(client_panel);
-    vertical->addWidget(server_log_panel);
-    vertical->setStretchFactor(0, 3);
-    vertical->setStretchFactor(1, 1);
-    vertical->setChildrenCollapsible(false);
-    vertical->setSizes({660, 230});
+    server_log_panel->setMinimumWidth(260);
+    columns->addWidget(client_panel);
+    columns->addWidget(server_log_panel);
+    columns->setStretchFactor(0, 3);
+    columns->setStretchFactor(1, 1);
+    columns->setChildrenCollapsible(false);
+    columns->setSizes({960, 440});
     right_layout->addLayout(search_row);
-    right_layout->addWidget(vertical, 1);
+    right_layout->addWidget(columns, 1);
 
     layout->addWidget(left);
     layout->addWidget(right, 1);

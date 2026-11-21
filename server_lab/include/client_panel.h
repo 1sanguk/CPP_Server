@@ -37,6 +37,8 @@ private:
     void Update_Guide();
 
     void Create_Clients();
+    // 카드를 "한 줄에 카드" 수에 맞춰 격자에 다시 놓는다.
+    void Layout_Cards();
     void Disconnect_Clients();
     // '보내는 쪽' 선택에 해당하는 카드들(모든 클라이언트 또는 하나)
     QList<QWidget*> Senders() const;
@@ -60,6 +62,7 @@ private:
     QPushButton* stop_move_button;
 
     QLabel* summary_label;
+    QSpinBox* cards_per_row;
     QWidget* card_container;
     QLabel* empty_hint;
     QGridLayout* card_grid;

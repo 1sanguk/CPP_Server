@@ -149,7 +149,8 @@ public:
         : QFrame(parent), number(number), packet_protocol(packet_protocol), world_protocol(world_protocol),
           name_of(std::move(name_of)){
         setObjectName("clientCard");
-        setMinimumHeight(world_protocol ? 330 : 240);
+        // 로그를 넉넉히 보이게 카드를 크게 잡는다. 카드가 많으면 패널이 세로로 스크롤된다.
+        setMinimumHeight(world_protocol ? 580 : 420);
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(10, 10, 10, 10);
         layout->setSpacing(8);
@@ -158,11 +159,16 @@ public:
         // 보낸 것과 받은 것을 왼쪽/오른쪽 칸으로 나눠 한눈에 구분되게 한다.
         sent_list = new LogList(2000, this);
         received_list = new LogList(2000, this);
+        for(LogList* list : {sent_list, received_list}){
+            list->setMinimumHeight(260);
+            // 줄마다 배경색을 번갈아 칠해 긴 로그에서도 줄을 따라 읽기 쉽게 한다.
+            list->setAlternatingRowColors(true);
+        }
         auto* logs = new QGridLayout();
         logs->setHorizontalSpacing(8);
         logs->setVerticalSpacing(2);
-        auto* sent_title = new QLabel("<b style='color:#1f5fa8'>→ 보낸 메시지</b>", this);
-        auto* received_title = new QLabel("<b style='color:#2a8a3e'>← 받은 메시지</b> <span style='color:#888'>· 알림</span>", this);
+        auto* sent_title = new QLabel("<b style='color:#1f5fa8; font-size:14px'>→ 보낸 메시지</b>", this);
+        auto* received_title = new QLabel("<b style='color:#2a8a3e; font-size:14px'>← 받은 메시지</b> <span style='color:#888'>· 알림</span>", this);
         logs->addWidget(sent_title, 0, 0);
         logs->addWidget(received_title, 0, 1);
         logs->addWidget(sent_list, 1, 0);
@@ -190,9 +196,14 @@ public:
         socket = new QTcpSocket(this);
         auto_timer = new QTimer(this);
         auto_timer->setSingleShot(true);
+        wander_timer = new QTimer(this);
+        wander_timer->setSingleShot(true);
+        connect(wander_timer, &QTimer::timeout, this, [this]{ if(wandering) Pick_Wander_Direction(); });
         connect(socket, &QTcpSocket::connected, this, [this]{ Log(Kind::Info, "서버에 연결됨"); Refresh(); });
         connect(socket, &QTcpSocket::disconnected, this, [this]{
             auto_timer->stop();
+            wander_timer->stop();
+            wandering = false;
             Log(Kind::Info, "연결 종료");
             Refresh();
         });
@@ -257,6 +268,8 @@ public:
         setProperty("received", received_count);
         setProperty("nearby", world_protocol ? static_cast<int>(others.size()) : -1);
         setProperty("autoSending", auto_timer->isActive());
+        setProperty("posX", self_position.x());
+        setProperty("posY", self_position.y());
         if(quiet != showing_quiet || !style_initialized){
             showing_quiet = quiet;
             style_initialized = true;
@@ -299,10 +312,22 @@ public:
         Refresh();
     }
 
-    // v8: 무작위 방향으로 계속 움직여 시야 진입/이탈이 일어나게 한다.
+    // v8: 월드를 계속 돌아다니게 해 시야 진입/이탈이 일어나게 한다.
+    // 서버는 월드 경계에서 위치를 잘라 내고(World::Step의 Clamp_Coordinate) 속도는 그대로 두므로, 한 방향만 보내면
+    // 벽에 닿은 뒤 제자리에 멈춘 것처럼 보인다. 그래서 2~4초마다 방향을 바꾸고, 벽에 가까워지면 중앙 쪽으로 튼다.
     void Random_Move(){
-        const double angle = QRandomGenerator::global()->generateDouble() * 2.0 * 3.14159265358979;
-        Send_Move(kGuiMoveSpeed * static_cast<float>(std::cos(angle)), kGuiMoveSpeed * static_cast<float>(std::sin(angle)));
+        if(!world_protocol || !Connected()) return;
+        if(!wandering) Log(Kind::Info, "돌아다니기 시작");
+        wandering = true;
+        Pick_Wander_Direction();
+    }
+
+    // 이동 정지 버튼: 돌아다니기도 끝낸다.
+    void Stop_Move(){
+        wandering = false;
+        wander_timer->stop();
+        Send_Move(0.0f, 0.0f);
+        Log(Kind::Info, "이동 정지");
     }
 
     void Send_Move(float vx, float vy){
@@ -312,11 +337,14 @@ public:
         qToLittleEndian<quint32>(std::bit_cast<quint32>(vx), body.data() + 4);
         qToLittleEndian<quint32>(std::bit_cast<quint32>(vy), body.data() + 8);
         socket->write(Make_Packet(kClientMove, body));
-        Log(Kind::Info, vx == 0.0f && vy == 0.0f ? QString("이동 정지") : QString("이동 시작"));
+        current_vx = vx;
+        current_vy = vy;
     }
 
     void Disconnect(){
         auto_timer->stop();
+        wander_timer->stop();
+        wandering = false;
         socket->disconnectFromHost();
         if(socket->state() != QAbstractSocket::UnconnectedState) socket->abort();
     }
@@ -327,6 +355,36 @@ private:
 
     void Schedule_Auto(){
         auto_timer->start(QRandomGenerator::global()->bounded(1000, 3001));
+    }
+
+    // 벽 근처(월드 크기의 3% 안쪽)에서 바깥쪽으로 가고 있으면 중앙 쪽(±60°)으로, 아니면 아무 방향으로 튼다.
+    void Pick_Wander_Direction(){
+        constexpr double kPi = 3.14159265358979;
+        double angle = QRandomGenerator::global()->generateDouble() * 2.0 * kPi;
+        if(Near_Edge()){
+            const double center = world_size * 0.5;
+            const double toward_center = std::atan2(center - self_position.y(), center - self_position.x());
+            angle = toward_center + (QRandomGenerator::global()->generateDouble() - 0.5) * (2.0 * kPi / 3.0);
+        }
+        Send_Move(kGuiMoveSpeed * static_cast<float>(std::cos(angle)), kGuiMoveSpeed * static_cast<float>(std::sin(angle)));
+        last_turn_ms = QDateTime::currentMSecsSinceEpoch();
+        wander_timer->start(QRandomGenerator::global()->bounded(2000, 4001));
+    }
+
+    bool Near_Edge() const{
+        if(!(world_size > 0.0f)) return false;
+        const double margin = world_size * 0.03;
+        return self_position.x() <= margin || self_position.y() <= margin ||
+               self_position.x() >= world_size - margin || self_position.y() >= world_size - margin;
+    }
+
+    // 지금 속도가 가까운 벽 바깥쪽을 향하고 있는지
+    bool Heading_Into_Wall() const{
+        if(!(world_size > 0.0f)) return false;
+        const double margin = world_size * 0.03;
+        return (self_position.x() <= margin && current_vx < 0.0f) || (self_position.y() <= margin && current_vy < 0.0f) ||
+               (self_position.x() >= world_size - margin && current_vx > 0.0f) ||
+               (self_position.y() >= world_size - margin && current_vy > 0.0f);
     }
 
     void Mark_Received(){
@@ -427,6 +485,10 @@ private:
             self_position = QPointF(Read_Float(body.constData() + 4), Read_Float(body.constData() + 8));
             if(world_map) world_map->Set_Self(self_position);
             Update_World_Status();
+            // 돌아다니는 중 벽으로 파고들고 있으면 바로 방향을 바꾼다(같은 벽에서 연달아 바꾸지 않게 0.3초 간격).
+            if(wandering && Heading_Into_Wall() && QDateTime::currentMSecsSinceEpoch() - last_turn_ms > 300){
+                Pick_Wander_Direction();
+            }
         }else if(id == kServerSpawn && body.size() >= 2){
             const int count = qFromLittleEndian<quint16>(body.constData());
             Read_Entities(body, true);
@@ -493,17 +555,16 @@ private:
     LogList* received_list;
     QTcpSocket* socket;
     QTimer* auto_timer;
+    // v8 돌아다니기 상태
+    QTimer* wander_timer;
+    bool wandering = false;
+    float current_vx = 0.0f;
+    float current_vy = 0.0f;
+    qint64 last_turn_ms = 0;
 };
 
 ClientCard* As_Card(QWidget* widget){
     return static_cast<ClientCard*>(widget);
-}
-
-// 접속 수에 맞춰 카드 격자의 열 수를 정한다. 카드가 너무 작아지지 않게 최대 3열로 둔다.
-int Grid_Columns(int count){
-    if(count <= 1) return 1;
-    if(count <= 4) return 2;
-    return 3;
 }
 
 QPushButton* Make_Button(const QString& text, QWidget* parent, const char* role = nullptr){
@@ -539,7 +600,8 @@ QString Lab_Style_Sheet(){
         QListWidget::item:selected { background: #2f6fb0; color: white; }
         QListWidget::item:hover { background: #2a2e34; }
         QPlainTextEdit { border: 1px solid #dfe3e8; border-radius: 6px; background: #fbfcfd; }
-        QListWidget#logList { font-size: 12px; }
+        QListWidget#logList { font-size: 13px; alternate-background-color: #25282e; }
+        QListWidget#logList::item { padding: 2px 4px; }
         QLabel#stepTitle { font-size: 15px; font-weight: bold; color: #2f5d8a; }
         QGroupBox { font-weight: bold; border: 1px solid #d5dbe1; border-radius: 8px; margin-top: 12px; padding: 10px 8px 8px 8px; }
         QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #2f5d8a; }
@@ -549,23 +611,25 @@ QString Lab_Style_Sheet(){
 ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
     setStyleSheet(Lab_Style_Sheet());
     auto* layout = new QVBoxLayout(this);
-    layout->setSpacing(10);
+    layout->setSpacing(6);
 
     // 지금 무엇을 해야 하는지 한 줄로 안내한다. 상태(방 시작 전/연결 전/연결 후)에 따라 문구가 바뀐다.
     guide_label = new QLabel(this);
     guide_label->setObjectName("guideLabel");
     guide_label->setWordWrap(true);
     guide_label->setTextFormat(Qt::RichText);
-    guide_label->setStyleSheet("QLabel{background:#2f5d8a; color:white; padding:12px 14px; border-radius:8px; font-size:15px;}");
+    guide_label->setStyleSheet("QLabel{background:#2f5d8a; color:white; padding:8px 12px; border-radius:8px; font-size:14px;}");
     // 선택한 서버 버전에서 어떤 결과가 정상인지 알려 준다.
     expect_label = new QLabel(this);
     expect_label->setWordWrap(true);
     expect_label->setTextFormat(Qt::RichText);
-    expect_label->setStyleSheet("QLabel{background:#eef5ec; color:#24452a; padding:8px 12px; border-radius:6px;}");
+    expect_label->setStyleSheet("QLabel{background:#eef5ec; color:#24452a; padding:5px 12px; border-radius:6px;}");
 
-    // ③ 연결
-    auto* connect_box = new QGroupBox("③ 클라이언트 연결", this);
-    auto* connect_row = new QHBoxLayout(connect_box);
+    // ③ 연결과 ④ 보내기를 상자 하나에 두 줄로 묶어, 아래 클라이언트 카드가 쓸 높이를 넉넉히 남긴다.
+    auto* connect_box = new QGroupBox("③ 연결  ·  ④ 보내기", this);
+    auto* controls_layout = new QVBoxLayout(connect_box);
+    controls_layout->setSpacing(6);
+    auto* connect_row = new QHBoxLayout();
     client_count = new QSpinBox(connect_box);
     client_count->setObjectName("clientCount");
     client_count->setRange(1, 30);
@@ -576,17 +640,17 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
     connect_button->setObjectName("connectButton");
     disconnect_button = Make_Button("모두 연결 끊기", connect_box);
     disconnect_button->setObjectName("disconnectButton");
-    connect_row->addWidget(new QLabel("클라이언트 수", connect_box));
+    connect_row->addWidget(new QLabel("<b>③</b> 클라이언트 수", connect_box));
     connect_row->addWidget(client_count);
     connect_row->addSpacing(8);
     connect_row->addWidget(connect_button);
     connect_row->addWidget(disconnect_button);
     connect_row->addStretch(1);
 
-    // ④ 보내기: 첫 줄은 직접 보내기, 둘째 줄은 랜덤/자동/이동
-    send_box = new QGroupBox("④ 메시지 보내기", this);
-    auto* send_layout = new QVBoxLayout(send_box);
-    auto* send_row = new QHBoxLayout();
+    // ④ 보내기: 보내는 쪽, 메시지, 보내기, 랜덤/자동/이동을 한 줄에 둔다.
+    send_box = new QWidget(connect_box);
+    auto* send_row = new QHBoxLayout(send_box);
+    send_row->setContentsMargins(0, 0, 0, 0);
     sender_combo = new QComboBox(send_box);
     sender_combo->setObjectName("senderCombo");
     sender_combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -596,34 +660,45 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
     auto* send_button = Make_Button("보내기", send_box, "primary");
     send_button->setObjectName("sendButton");
     send_button->setMinimumWidth(90);
-    send_row->addWidget(new QLabel("보내는 쪽", send_box));
+    send_row->addWidget(new QLabel("<b>④</b>", send_box));
     send_row->addWidget(sender_combo);
     send_row->addWidget(message_edit, 1);
     send_row->addWidget(send_button);
 
-    auto* extra_row = new QHBoxLayout();
-    random_button = Make_Button("랜덤 메시지 1번", send_box);
+    auto* extra_row = send_row;
+    random_button = Make_Button("랜덤 1번", send_box);
     random_button->setObjectName("randomButton");
     random_button->setToolTip("보내는 쪽 클라이언트마다 임의의 메시지를 한 번 보냅니다.");
-    auto_button = Make_Button("▶ 랜덤 자동 보내기", send_box);
+    auto_button = Make_Button("▶ 랜덤 자동", send_box);
     auto_button->setObjectName("autoButton");
     auto_button->setCheckable(true);
     auto_button->setToolTip("보내는 쪽 클라이언트마다 1~3초 간격으로 임의의 메시지를 계속 보냅니다. 다시 누르면 멈춥니다.");
     move_button = Make_Button("랜덤 이동", send_box);
+    move_button->setObjectName("moveButton");
     move_button->setToolTip("v8: 보내는 쪽 클라이언트가 임의 방향으로 계속 움직입니다.");
     stop_move_button = Make_Button("■ 이동 정지", send_box);
+    stop_move_button->setObjectName("stopMoveButton");
+    extra_row->addSpacing(8);
     extra_row->addWidget(random_button);
     extra_row->addWidget(auto_button);
-    extra_row->addSpacing(12);
     extra_row->addWidget(move_button);
     extra_row->addWidget(stop_move_button);
-    extra_row->addStretch(1);
-    send_layout->addLayout(send_row);
-    send_layout->addLayout(extra_row);
+    controls_layout->addLayout(connect_row);
+    controls_layout->addWidget(send_box);
 
     summary_label = new QLabel(this);
     summary_label->setObjectName("summaryLabel");
     summary_label->setTextFormat(Qt::RichText);
+    // 한 줄에 놓을 카드 수. 줄이면 카드가 넓어져 로그 한 줄이 덜 잘린다.
+    cards_per_row = new QSpinBox(this);
+    cards_per_row->setObjectName("cardsPerRow");
+    cards_per_row->setRange(1, 3);
+    cards_per_row->setValue(2);
+    cards_per_row->setSuffix(" 개");
+    auto* summary_row = new QHBoxLayout();
+    summary_row->addWidget(summary_label, 1);
+    summary_row->addWidget(new QLabel("한 줄에 카드", this));
+    summary_row->addWidget(cards_per_row);
 
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
@@ -648,10 +723,10 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
     layout->addWidget(guide_label);
     layout->addWidget(expect_label);
     layout->addWidget(connect_box);
-    layout->addWidget(send_box);
-    layout->addWidget(summary_label);
+    layout->addLayout(summary_row);
     layout->addWidget(scroll, 1);
 
+    connect(cards_per_row, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]{ Layout_Cards(); });
     refresh_timer = new QTimer(this);
     connect(refresh_timer, &QTimer::timeout, this, [this]{ Refresh_Cards(); });
     connect(connect_button, &QPushButton::clicked, this, [this]{ Create_Clients(); });
@@ -670,7 +745,7 @@ ClientPanel::ClientPanel(QWidget* parent) : QWidget(parent){
         for(QWidget* card : Senders()) As_Card(card)->Random_Move();
     });
     connect(stop_move_button, &QPushButton::clicked, this, [this]{
-        for(QWidget* card : Senders()) As_Card(card)->Send_Move(0.0f, 0.0f);
+        for(QWidget* card : Senders()) As_Card(card)->Stop_Move();
     });
 
     Set_Server_Version(0);
@@ -700,7 +775,7 @@ void ClientPanel::Update_Guide(){
     }else if(cards.isEmpty()){
         step = "<b>③ 클라이언트 수를 정하고 '클라이언트 연결'을 누르세요.</b>";
     }else{
-        step = "<b>④ '보내기' 또는 '랜덤 메시지'를 눌러 보세요.</b> 아래 카드에서 누가 무엇을 받았는지 보입니다. "
+        step = "<b>④ '보내기' 또는 '랜덤 1번'을 눌러 보세요.</b> 아래 카드에서 누가 무엇을 받았는지 보입니다. "
                "테두리가 주황색인 카드는 5초 넘게 아무것도 받지 못한 클라이언트입니다.";
     }
     guide_label->setText("지금 할 일 &nbsp;→&nbsp; " + step);
@@ -734,13 +809,19 @@ void ClientPanel::Set_Room_Active(bool active){
     Update_Guide();
 }
 
+// 카드를 "한 줄에 카드" 수에 맞춰 격자에 다시 놓는다. 1이면 카드 하나가 패널 폭 전체를 써서 로그가 가장 넓게 보인다.
+void ClientPanel::Layout_Cards(){
+    const int columns = std::max(1, cards_per_row->value());
+    for(QWidget* card : cards) card_grid->removeWidget(card);
+    for(int column = 0; column < 3; ++column) card_grid->setColumnStretch(column, column < columns ? 1 : 0);
+    for(int i = 0; i < cards.size(); ++i) card_grid->addWidget(cards[i], i / columns, i % columns);
+}
+
 void ClientPanel::Create_Clients(){
     if(!room_active) return;
     Disconnect_Clients();
     const bool world = server_version >= 8;
     const int count = client_count->value();
-    const int columns = Grid_Columns(count);
-    for(int column = 0; column < 3; ++column) card_grid->setColumnStretch(column, column < columns ? 1 : 0);
     empty_hint->hide();
     sender_combo->clear();
     sender_combo->addItem("모든 클라이언트");
@@ -755,9 +836,9 @@ void ClientPanel::Create_Clients(){
         auto* card = new ClientCard(i, Uses_Packet_Protocol(), world, name_of, card_container);
         cards.push_back(card);
         card->Apply_Search(search_query, search_only_matches);
-        card_grid->addWidget(card, (i - 1) / columns, (i - 1) % columns);
         sender_combo->addItem(QString("Client %1만").arg(i));
     }
+    Layout_Cards();
     refresh_timer->start(500);
     disconnect_button->setEnabled(true);
     send_box->setEnabled(true);
@@ -805,7 +886,7 @@ void ClientPanel::Send_Once(){
 }
 
 void ClientPanel::Set_Auto_Send(bool on){
-    auto_button->setText(on ? "■ 자동 보내기 멈추기" : "▶ 랜덤 자동 보내기");
+    auto_button->setText(on ? "■ 자동 멈추기" : "▶ 랜덤 자동");
     for(QWidget* card : cards) As_Card(card)->Stop_Auto();
     if(!on) return;
     for(QWidget* card : Senders()) As_Card(card)->Start_Auto();

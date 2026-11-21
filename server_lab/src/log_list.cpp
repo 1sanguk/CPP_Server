@@ -12,6 +12,7 @@ constexpr int kColorRole = Qt::UserRole + 1;
 }
 
 LogList::LogList(int max_lines, QWidget* parent) : QListWidget(parent), max_lines(max_lines){
+    setObjectName("logList");
     setSelectionMode(QAbstractItemView::ExtendedSelection);
     setUniformItemSizes(true);
     setWordWrap(false);
