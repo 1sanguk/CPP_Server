@@ -279,6 +279,59 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
     수신 멈춤을 읽기 전에 판단, 입장·퇴장 틱당 상한(동시 입장 70.8 → 29ms), 스레드별 CPU 측정(reactor 46~52%),
     서버·봇 코어 분리 측정, CI(`v9-linux.yml`), Server Lab에서 WSL2로 v9 실행
 
+### v10 — io_uring 기반 완료 통지 서버 (v9와 같은 게임 로직)
+
+- **상태**: 계획
+- **목표**: v9의 epoll 네트워크 계층을 io_uring으로 바꾸고, 같은 게임 로직(틱 루프 + 격자 AOI) 위에서 세 가지 I/O 방식을 비교한다.
+  - IOCP(v8, Windows 완료 통지), epoll(v9, Linux 준비 통지), io_uring(v10, Linux 완료 통지)
+  - io_uring은 IOCP처럼 "버퍼를 맡기고 끝나면 알림"을 받는다. 그래서 v8에서 익힌 "커널이 버퍼를 쓰는 동안 수명 지키기"와
+    "남은 작업을 모두 회수한 뒤 정리"가 Linux에서 다시 나온다.
+  - v9와 같은 PC, 같은 컴파일러(g++), 같은 WSL2에서 비교한다. v8↔v9 비교에서는 컴파일러·실행 환경이 섞여 원인을 나누기 어려웠다.
+- **실행 환경**: Linux(Windows에서는 WSL2). 커널 6.6(io_uring 활성, `io_uring_disabled=0` 확인), liburing 2.5(`liburing-dev`).
+  - 준비: WSL에서 `sudo apt install liburing-dev`(사용자가 직접 실행).
+  - CMake는 pkg-config로 liburing을 찾고, 없으면 v10만 건너뛴다(다른 버전 빌드가 깨지지 않게).
+- **재사용**
+  - v9에서 그대로: `World`, `TickScheduler`, 패킷, 조립기, `GameJobQueue`, `AsyncLogger`, 틱 루프 전체(입장·퇴장 상한, 입력 만료,
+    채팅 제한), 종료 신호(`sigwait` + Enter)
+  - v8(IOCP)에서 개념: 작업 하나당 완료 하나, 세션별로 진행 중인 Recv·Send를 하나씩만 두기, 송신 큐를 `WSABUF` 배열로 가리키고
+    완료까지 `in_flight`로 붙잡기, 진행 중 작업 수(`pending_io_count`)를 세어 0이 될 때까지 회수한 뒤 정리
+  - v9의 로컬 시험 도구(기능 검사, 부하 봇, 느린 클라이언트, 측정 스크립트)를 서버 경로만 바꿔 그대로 쓴다(프로토콜이 같다)
+- **구현 세부사항**:
+  - **스레드 구성**: ring 스레드 1(제출·완료 처리, 소켓을 만지는 유일한 스레드) + 틱 스레드 1(v9와 같음). ring은 한 스레드만 쓰므로
+    `IORING_SETUP_SINGLE_ISSUER`(+ `DEFER_TASKRUN`)를 검토한다
+  - **user_data 설계**: 완료(CQE)가 어느 세션의 어떤 작업인지 알 수 있도록 작업 종류 + session_id를 담는다. 포인터를 담으면 세션이
+    먼저 사라졌을 때 해제된 메모리를 가리킬 수 있다(v9에서 fd 대신 session_id를 키로 쓴 것과 같은 이유)
+  - **accept**: multishot accept — SQE 하나로 접속마다 CQE가 계속 온다. `IORING_CQE_F_MORE`가 꺼지면 다시 건다
+  - **수신**: 두 방식을 차례로 만들고 비교한다
+    1. 세션마다 고정 버퍼(8 KiB)로 recv를 하나씩 건다(v8 IOCP와 같은 모양)
+    2. provided buffer ring + multishot recv — 커널이 공용 버퍼 묶음에서 골라 쓰므로 유휴 연결은 버퍼를 갖지 않는다.
+       다 쓴 버퍼는 조립기에 복사한 뒤 바로 돌려준다
+  - **송신**: 세션당 송신 하나만 진행. 송신 큐 버퍼들을 iovec 배열로 가리켜 `sendmsg`를 제출하고, 완료까지 버퍼를 붙잡는다.
+    완료 바이트가 모자라면(partial) 큐를 그만큼 당기고 이어서 제출한다. 틱 스레드는 v9처럼 "보낼 세션 목록"을 넘기고 깨운다
+  - **틱 → ring 깨우기**: eventfd에 대한 read를 ring에 걸어 두고 틱 스레드가 write한다(완료가 오면 다시 건다).
+    `IORING_OP_MSG_RING`(ring끼리 메시지)도 비교 후보로 둔다
+  - **수신 멈춤**: job 큐가 높은 수위를 넘으면 그 세션의 recv를 다시 걸지 않는다(IOCP와 같다). multishot recv는 취소하거나
+    끝난 뒤 다시 걸지 않는 방식으로 멈춘다
+  - **제출 묶기**: 한 루프에서 생긴 SQE를 `io_uring_submit_and_wait` 한 번으로 제출하고 완료를 모아 처리한다.
+    v9의 `epoll_wait` + `recv` + `sendmsg` 시스템 호출 수와 비교한다
+  - **큐 크기와 넘침**: SQ가 가득 차면 먼저 제출하고 다시 얻는다. CQ 넘침은 `IORING_FEAT_NODROP` 여부를 확인하고 `[Status]`에 센다
+  - **세션 닫기**: 진행 중인 recv·send가 있으면 취소(`IORING_OP_ASYNC_CANCEL`)하고, 그 세션의 완료가 모두 돌아온 뒤에만 fd를 닫고
+    세션을 놓는다. 이게 v10에서 가장 실수하기 쉬운 곳이다(ASan으로 확인)
+  - **종료 순서**: `Stop` → 새 accept 중단 → 틱 루프 종료(job 큐 Close, join) → 남은 송신 한 번 → 진행 중 작업 모두 취소 →
+    진행 중 작업 수가 0이 될 때까지 완료 회수 → fd·ring 정리(v8 `Clean_Up`과 같은 순서)
+  - **상태 지표**: `[Status]`에 제출 횟수(`io_uring_enter`), 루프당 완료 수, 진행 중 작업 수, 취소 수, partial send 수,
+    CQ 넘침 수, 수신 방식(고정/provided)을 추가
+  - **빌드**: `server/v10`(버전별 폴더 규칙). 코어는 v9 파일을 복사한다. Server Lab 카탈로그에 v10을 추가하고 Windows에서는 v9처럼 WSL2로 띄운다
+- **테스트/QA** (v9의 로컬 도구를 서버 경로만 바꿔 사용):
+  - 기능 검사: 입장, 시야 채팅, 셀 이동, 속도 상한, 입력 만료, 잘못된 입력에서 그 연결만 종료, Enter·SIGTERM 종료 코드 0
+  - 부하 봇 500 / 1,000 / 2,000명 시야 검증. v9와 같은 조건에서 틱 시간, ring 스레드 CPU, 초당 시스템 호출 수를 비교해 benchmark.md에 기록
+  - 수신 방식 비교: 고정 버퍼 ↔ provided buffer ring의 유휴 연결 1,000개 메모리, 2,000명 처리량
+  - 느린 클라이언트(partial send, 송신 큐 상한), 수신 멈춤(수위 1,000/250), 셀 하나 1,000명 동시 입장·퇴장
+  - 작업이 진행 중일 때 세션 닫기·서버 종료: 취소와 완료 회수 뒤 해제(ASan + LeakSanitizer로 use-after-free 없음 확인)
+- **정할 것(시작 전에)**:
+  - 구현 방식: 원래 규칙(사용자가 직접 구현, Claude는 힌트와 리뷰)으로 할지, v9처럼 Claude가 구현할지
+  - 수신 방식 1과 2를 둘 다 할지, 1만 하고 2는 보완으로 미룰지
+
 각 버전은 `server/` 아래 `v1`, `v2` 등 버전별 하위 폴더(`include`/`src`/`CMakeLists.txt`)로 분리하고, 최상위 `server/CMakeLists.txt`가 `add_subdirectory()`로 각 버전을 불러온다. 버전마다 독립된 실행 파일(`v1_server`, `v2_server`, ...)로 빌드되어 언제든 원하는 버전을 골라 실행할 수 있다.
 
 ## 공통 테스트/QA 도구
@@ -330,3 +383,4 @@ Android 먼저, Unity 2022.3, 프로젝트는 저장소 밖 `D:\unity\Project\Cp
 - [x] v7 — IOCP + 워커/game logic queue 결합
 - [x] v8 — 틱 기반 게임 루프 + 격자 AOI
 - [x] v9 — v8 틱 서버의 Linux(epoll) 이식
+- [ ] v10 — io_uring 기반 완료 통지 서버
