@@ -15,9 +15,11 @@ v6의 IOCP completion I/O 위에 **패킷 조립 → game job 큐 → 단일 gam
 - [include/game_job_queue.h](include/game_job_queue.h), [src/game_job_queue.cpp](src/game_job_queue.cpp): bounded job 큐
 - [include/async_logger.h](include/async_logger.h), [src/async_logger.cpp](src/async_logger.cpp): 전용 스레드가 출력하는 비동기 로거
 - [include/iocp_game_server.h](include/iocp_game_server.h), [src/iocp_game_server.cpp](src/iocp_game_server.cpp): IOCP 서버와 game logic
-- [tests/v7_unit_tests.cpp](tests/v7_unit_tests.cpp): 조립기·큐·로거 단위 테스트 (`ctest`)
-- [tests/v7_smoke_test.py](tests/v7_smoke_test.py): 실제 서버를 띄워 확인하는 통합 테스트(지연시간 p50/p95/p99 포함)
-- [../../.github/workflows/v7-windows.yml](../../.github/workflows/v7-windows.yml): Release·ASan 빌드에서 위 두 테스트를 실행하는 CI
+- `tests/v7_unit_tests.cpp`(지금은 저장소에 없음): 조립기·큐·로거 단위 테스트 (`ctest`)
+- `tests/v7_smoke_test.py`(지금은 저장소에 없음): 실제 서버를 띄워 확인하는 통합 테스트(지연시간 p50/p95/p99 포함)
+- [../../.github/workflows/v7-windows.yml](../../.github/workflows/v7-windows.yml): Release·ASan 빌드를 확인하는 CI(테스트를 지운 뒤로는 빌드만)
+- 위 `tests/`·`tools/`의 테스트와 부하 봇은 커밋하기 전에 저장소에서 지웠다. 검증 결과는 그때 실행한 기록이며,
+  아래 `실행과 테스트`의 테스트 명령은 지금은 그대로 동작하지 않는다. CI는 서버 빌드(Release·ASan)만 확인한다.
 
 ## 패킷 형식
 

@@ -4,7 +4,8 @@
 
 enum class HostOs { Linux, Windows, MacOs, Unknown };
 enum class Availability { Available, UnsupportedOs, NotImplemented };
-enum class ExecutionMode { Native, Docker, None };
+// Wsl: Windows에서 Linux 전용 서버(v9)를 WSL2 안에서 빌드·실행한다. localhost:9000은 WSL2가 Windows로 넘겨준다.
+enum class ExecutionMode { Native, Docker, Wsl, None };
 
 struct ServerDescriptor{
     int version;
@@ -24,4 +25,4 @@ struct ServerEntry{
 
 HostOs Detect_Host_Os();
 std::string Host_Os_Name(HostOs os);
-std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available = false);
+std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available = false, bool wsl_available = false);

@@ -4,3 +4,6 @@ build*/
 .tools/
 /*.app
 *.log
+# v9의 테스트·측정 도구는 로컬에만 둔다(저장소에 올리지 않음). CMake는 폴더가 있을 때만 빌드한다.
+server/v9/tests/
+server/v9/tools/

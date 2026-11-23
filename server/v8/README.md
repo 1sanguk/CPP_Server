@@ -21,11 +21,13 @@ game logic을 틱 루프와 월드로 바꿨다.
 - [include/game_job_queue.h](include/game_job_queue.h), [src/game_job_queue.cpp](src/game_job_queue.cpp): 틱 단위로 비우는 job 큐
 - [include/async_logger.h](include/async_logger.h), [src/async_logger.cpp](src/async_logger.cpp): v7과 같은 비동기 로거
 - [include/iocp_world_server.h](include/iocp_world_server.h), [src/iocp_world_server.cpp](src/iocp_world_server.cpp): IOCP 서버와 틱 루프
-- [tests/v8_unit_tests.cpp](tests/v8_unit_tests.cpp): 패킷·셀·AOI·틱 스케줄러·큐 단위 테스트 (`ctest`)
-- [tests/v8_smoke_test.py](tests/v8_smoke_test.py): 실제 서버를 띄워 확인하는 통합 테스트
-- [tools/v8_load_bot.cpp](tools/v8_load_bot.cpp): 수천 명이 움직이는 C++ 부하 봇 + 시야 정확성 검증
+- `tests/v8_unit_tests.cpp`(지금은 저장소에 없음): 패킷·셀·AOI·틱 스케줄러·큐 단위 테스트 (`ctest`)
+- `tests/v8_smoke_test.py`(지금은 저장소에 없음): 실제 서버를 띄워 확인하는 통합 테스트
+- `tools/v8_load_bot.cpp`(지금은 저장소에 없음): 수천 명이 움직이는 C++ 부하 봇 + 시야 정확성 검증
 - [../../basicdata/tools/measure_v8_scaling.py](../../basicdata/tools/measure_v8_scaling.py): 인원별 틱 시간, AOI 켬/끔 측정
-- [../../.github/workflows/v8-windows.yml](../../.github/workflows/v8-windows.yml): Release·ASan 빌드에서 테스트를 실행하는 CI(push 때 자동 실행하지 않고 GitHub Actions에서 수동 실행)
+- [../../.github/workflows/v8-windows.yml](../../.github/workflows/v8-windows.yml): Release·ASan 빌드를 확인하는 CI(테스트를 지운 뒤로는 빌드만)(push 때 자동 실행하지 않고 GitHub Actions에서 수동 실행)
+- 위 `tests/`·`tools/`의 테스트와 부하 봇은 커밋하기 전에 저장소에서 지웠다. 검증 결과는 그때 실행한 기록이며,
+  아래 `실행과 테스트`의 테스트 명령은 지금은 그대로 동작하지 않는다. CI는 서버 빌드(Release·ASan)만 확인한다.
 
 ## 패킷 형식
 

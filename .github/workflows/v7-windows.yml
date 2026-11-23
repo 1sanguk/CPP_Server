@@ -1,11 +1,12 @@
 name: v7 Windows IOCP game server
 
 # 학습 프로젝트라 push/PR마다 자동으로 돌리지 않고, 필요할 때 GitHub Actions 화면에서 직접 실행한다.
+# v7 테스트(단위·통합)는 저장소에서 지웠으므로 Release·ASan 빌드가 되는지만 확인한다.
 on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  build:
     name: ${{ matrix.name }}
     runs-on: windows-2022
     timeout-minutes: 20
@@ -17,12 +18,10 @@ jobs:
             build_dir: build/server
             config: Release
             cmake_args: ""
-            asan: false
           - name: AddressSanitizer
             build_dir: build/server-asan
             config: RelWithDebInfo
             cmake_args: "-DV7_ENABLE_ASAN=ON"
-            asan: true
 
     env:
       V7_BUILD_DIR: ${{ matrix.build_dir }}
@@ -33,52 +32,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Configure
         shell: pwsh
         run: cmake -S server -B $env:V7_BUILD_DIR -A x64 $env:V7_CMAKE_ARGS
 
       - name: Build v7
         shell: pwsh
-        run: cmake --build $env:V7_BUILD_DIR --config $env:V7_CONFIG --target v7_server v7_unit_tests --parallel
-
-      - name: Prepare AddressSanitizer runtime
-        if: matrix.asan
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -property installationPath
-          if (-not $vsPath) {
-              throw "Visual Studio installation was not found"
-          }
-
-          $asanDll = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Recurse `
-              -Filter "clang_rt.asan_dynamic-x86_64.dll" |
-              Where-Object { $_.FullName -match "\\bin\\Hostx64\\x64\\" } |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1
-          if (-not $asanDll) {
-              throw "MSVC AddressSanitizer runtime DLL was not found"
-          }
-
-          Copy-Item $asanDll.FullName "$env:V7_BUILD_DIR\v7\$env:V7_CONFIG"
-          Write-Host "Copied ASan runtime from $($asanDll.FullName)"
-
-      - name: Run unit tests
-        shell: pwsh
-        run: ctest --test-dir $env:V7_BUILD_DIR -C $env:V7_CONFIG -R v7_unit_tests --output-on-failure
-
-      - name: Run integration tests
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $serverPath = (Resolve-Path "$env:V7_BUILD_DIR/v7/$env:V7_CONFIG/v7_server.exe").Path
-          python server/v7/tests/v7_smoke_test.py $serverPath --clients 50 --messages 20
-          if ($LASTEXITCODE -ne 0) {
-              throw "v7 integration tests failed"
-          }
+        run: cmake --build $env:V7_BUILD_DIR --config $env:V7_CONFIG --target v7_server --parallel

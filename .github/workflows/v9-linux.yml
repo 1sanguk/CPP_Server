@@ -1,0 +1,49 @@
+name: v9 Linux epoll tick + AOI server
+
+# 학습 프로젝트라 push/PR마다 자동으로 돌리지 않고, 필요할 때 GitHub Actions 화면에서 직접 실행한다.
+# v9의 테스트·측정 도구는 저장소에 올리지 않으므로(로컬 전용) 빌드가 되는지만 확인한다.
+# Linux: 서버를 Release·ASan으로 빌드한다. Windows: 소켓과 무관한 코어를 MSVC로 빌드한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Release
+            build_type: Release
+            cmake_args: ""
+          - name: AddressSanitizer
+            build_type: RelWithDebInfo
+            cmake_args: "-DV9_ENABLE_ASAN=ON"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S server -B build/v9 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_args }}
+
+      - name: Build v9
+        run: cmake --build build/v9 --target v9_server --parallel
+
+  windows-core:
+    name: Windows core (MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S server -B build/server -A x64
+
+      - name: Build v9 core
+        shell: pwsh
+        run: cmake --build build/server --config Release --target v9_core --parallel

@@ -98,12 +98,18 @@ void Run_Version(int version, const QStringList& server_env, const std::function
     for(const QString& pair : server_env) env.insert(pair.section('=', 0, 0), pair.section('=', 1));
     server.setProcessEnvironment(env);
     server.setProcessChannelMode(QProcess::MergedChannels);
-    server.start(Server_Path(version), {});
+    if(version == 9){
+        // v9는 Linux 서버라 Server Lab처럼 WSL2로 띄운다. 환경변수는 WSL로 넘어가지 않으므로 env 명령으로 준다.
+        // exec로 bash를 서버로 바꿔, 아래에서 보내는 줄바꿈이 서버의 표준 입력에 닿게 한다.
+        server.start("wsl.exe", {"-e", "bash", "-lc", "exec env " + server_env.join(' ') + " ~/v9build/v9/v9_server"});
+    }else{
+        server.start(Server_Path(version), {});
+    }
     if(!server.waitForStarted(3000)){
-        Check(false, QString("start server %1").arg(Server_Path(version)));
+        Check(false, QString("start server v%1").arg(version));
         return;
     }
-    Check(Wait_Until(Port_Open, 5000), "server listens on 9000");
+    Check(Wait_Until(Port_Open, version == 9 ? 20000 : 5000), "server listens on 9000");
 
     ClientPanel panel;
     panel.resize(1100, 760);
@@ -237,7 +243,7 @@ void Run_Version(int version, const QStringList& server_env, const std::function
 
     panel.Shutdown();
     Pump(200);
-    server.write("\n");   // v6~v8 서버는 Enter로 정상 종료한다.
+    server.write("\n");   // v6~v9 서버는 Enter로 정상 종료한다(v9는 WSL을 거쳐 표준 입력으로 받는다).
     server.closeWriteChannel();
     if(!server.waitForFinished(5000)){
         server.kill();
@@ -269,6 +275,14 @@ int main(int argc, char** argv){
     Run_Version(7, {}, [](int){ return 1; }, shot_dir);
     // v8: 셀 하나(셀 크기 = 월드 크기)로 두면 모두 같은 시야라 전원이 받는다.
     Run_Version(8, {"V8_CELL_SIZE=1000", "V8_WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
+    // v9: v8과 같은 프로토콜·규칙이라 같은 기대값. WSL2에 ~/v9build/v9/v9_server가 빌드돼 있을 때만 돌린다.
+    QProcess probe;
+    probe.start("wsl.exe", {"-e", "bash", "-lc", "test -x ~/v9build/v9/v9_server"});
+    if(probe.waitForFinished(20000) && probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0){
+        Run_Version(9, {"V9_CELL_SIZE=1000", "V9_WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
+    }else{
+        std::printf("\n== v9 == skipped (WSL2 or ~/v9build/v9/v9_server not found)\n");
+    }
 
     std::printf("\n%s (%d failure%s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

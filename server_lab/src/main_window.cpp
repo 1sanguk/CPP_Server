@@ -24,9 +24,26 @@ bool Docker_Available(){
     process.start("docker", {"info"});
     return process.waitForFinished(5000) && process.exitCode() == 0;
 }
+
+// Windows에서 WSL2 배포판이 있어 명령을 실행할 수 있는지. 꺼져 있던 WSL을 켜는 데 몇 초 걸릴 수 있다.
+bool Wsl_Available(){
+    if(Detect_Host_Os() != HostOs::Windows) return false;
+    QProcess process;
+    process.start("wsl.exe", {"-e", "true"});
+    return process.waitForFinished(15000) && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
 }
 
-MainWindow::MainWindow() : catalog(Build_Server_Catalog(Detect_Host_Os(), Docker_Available())){
+// D:/Projects/x → /mnt/d/Projects/x (WSL에서 본 Windows 경로)
+QString To_Wsl_Path(const QString& windows_path){
+    QString path = QDir::fromNativeSeparators(windows_path);
+    if(path.size() >= 2 && path[1] == ':'){
+        path = "/mnt/" + path.left(1).toLower() + path.mid(2);
+    }
+    return path;
+}
+}
+
+MainWindow::MainWindow() : catalog(Build_Server_Catalog(Detect_Host_Os(), Docker_Available(), Wsl_Available())){
     setWindowTitle("MMO Server Architecture Lab");
     resize(1700, 940);
     setStyleSheet(Lab_Style_Sheet());
@@ -426,6 +443,28 @@ void MainWindow::Start_Room(){
         Track_Room_Process(process);
         process->start();
         Add_Lab_Message(QString("Docker 실험방 시작: v%1, localhost:9000").arg(entry.descriptor.version));
+        return;
+    }
+    if(entry.execution_mode == ExecutionMode::Wsl){
+        // WSL 안에서 빌드(바뀐 것만)한 뒤 서버를 실행한다. exec로 bash를 서버로 바꿔, 실험방 종료 때 Windows에서 보내는
+        // 줄바꿈이 서버의 표준 입력에 바로 닿게 한다(v9는 SIGTERM 외에 Enter로도 정상 종료한다).
+        // 빌드 폴더는 WSL 홈에 둔다. /tmp는 WSL이 꺼지면 지워진다.
+        const QString server_dir = To_Wsl_Path(Repo_Root() + "/server");
+        const QString script = QString(
+            "cd '%1' && cmake -S . -B ~/v9build -DCMAKE_BUILD_TYPE=Release > /dev/null && "
+            "cmake --build ~/v9build --target v9_server -j > /dev/null && exec ~/v9build/v9/v9_server").arg(server_dir);
+        auto* process = new QProcess(this);
+        process->setProgram("wsl.exe");
+        process->setArguments({"-e", "bash", "-lc", script});
+        process->setProcessChannelMode(QProcess::MergedChannels);
+        connect(process, &QProcess::readyRead, this, [this, process]{
+            if(closing) return;
+            Append_Server_Log(QString::fromUtf8(process->readAll()));
+        });
+        Track_Room_Process(process);
+        process->start();
+        Add_Lab_Message(QString("WSL2 실험방 시작: v%1, localhost:9000 (처음에는 빌드 때문에 시간이 걸립니다)")
+            .arg(entry.descriptor.version));
         return;
     }
     QString executable = Find_Executable(entry.descriptor);

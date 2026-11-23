@@ -14,7 +14,7 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 - v4~v5는 Linux 환경이 필요. Windows 컴퓨터에서는 WSL2를 사용해 서버 배포 환경과
   같은 Linux API로 개발한다.
 - v6~v8은 Linux 배포 트랙과 별개로 native Windows의 IOCP 모델을 비교 학습한다. v8은 v7의 IOCP 계층 위에
-  틱 루프와 AOI를 얹고, Linux 이식은 이후 버전에서 검토한다.
+  틱 루프와 AOI를 얹었고, v9에서 같은 게임 로직을 Linux epoll로 이식했다.
   Windows와 Visual Studio 환경에서 Winsock2 및 IOCP API를 직접 사용한다.
 
 ## 버전별 계획
@@ -234,6 +234,51 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
   - 완료 후 보완(2026-11-20): 세션별 틱당 채팅 제한, 시야 변경 수집 버퍼 재사용, 주변 좌표 16비트 압축(틱당 송신
     2,000명 3.7 → 2.5 MB), 입력 순번과 `S_SelfState`, GUI 미니맵·이동 버튼. 자세한 내용은 feedback.md
 
+### v9 — v8 틱 서버의 Linux(epoll) 이식
+
+- **상태**: 완료 (2026-11-22). 이 버전은 예외로 Claude가 구현하고 설명했다(사용자 결정).
+- **목표**: v8의 틱 루프 + 격자 AOI 서버를 배포 타겟인 Linux에서 epoll로 돌린다.
+  - 같은 게임 로직을 완료 통지(IOCP, "작업이 끝났다")와 준비 통지(epoll, "이제 읽거나 쓸 수 있다") 두 방식의
+    네트워크 계층 위에 올려 차이를 비교한다.
+  - 소켓을 모르는 게임 로직과 플랫폼별 네트워크 계층의 경계를 코드로 분리한다.
+- **실행 환경**: Linux(Windows에서는 WSL2). v4·v5와 같은 POSIX + epoll + eventfd.
+- **재사용**
+  - v8에서 그대로: `World`, `TickScheduler`, `packet`, `PacketAssembler`, `GameJobQueue`, `AsyncLogger`
+    (모두 Winsock/IOCP를 쓰지 않는다)
+  - v5에서: epoll 이벤트 루프, non-blocking fd, `EPOLLOUT` + 세션별 송신 버퍼, `SendState`(Completed/Partial/Failed),
+    `eventfd`로 루프 깨우기, `SIGTERM` graceful shutdown
+- **구현 세부사항**:
+  - **스레드 구성**: reactor 스레드(epoll, accept·recv·send) + 틱 스레드(v8과 같음). v5의 워커 풀 대신 v8의 틱 스레드가
+    게임 로직을 맡는다
+  - **수신**: 읽을 수 있으면 `EAGAIN`까지 반복해서 읽고(edge-triggered면 필수), 조립된 패킷을 `Push_Batch`로 job 큐에 넣는다.
+    job 큐가 높은 수위를 넘으면 그 fd의 `EPOLLIN`을 빼서 수신을 멈추고, 낮은 수위 아래로 내려가면 다시 켠다(v8 `Pause_Recv`의 epoll판)
+  - **송신**: 틱 스레드는 세션 송신 큐에 한 틱 분량을 넣고, 실제 `send`/`writev`는 reactor가 한다.
+    틱 끝에 "보낼 것이 생긴 세션 목록"을 넘기고 `eventfd`로 reactor를 깨운다(v8에서 worker에게 송신 게시를 넘긴 것과 같은 이유).
+    한 번에 다 못 보내면 `EPOLLOUT`을 켜고, 다 보내면 끈다
+  - **세션 수명**: fd 번호는 재사용되므로 v8처럼 증가하는 `session_id`를 쓰고, 틱 스레드와 reactor가 함께 보는 세션은
+    `shared_ptr`로 수명을 붙잡는다. 닫기는 reactor가 한 번만 하고, 틱 스레드에는 Leave job으로 알린다
+  - **종료 순서**: `Stop` → 틱 루프 종료(job 큐 Close, join) → reactor 루프 종료(eventfd) → 남은 송신 best-effort → fd 정리
+  - **빌드**: 최상위 `server/CMakeLists.txt`의 Linux 분기에 `add_subdirectory(v9)`. 공통 코드는 v8 파일을 복사해 v9 폴더에 둔다
+    (버전별 폴더 규칙 유지)
+- **테스트/QA**:
+  - ~~v8 단위 테스트를 Linux에서 그대로 통과~~ → v8 테스트 폴더를 지운 뒤라 대신 부하 봇의 시야 검증으로 확인
+  - C++ 부하 봇(`tools/load_bot.cpp`, epoll)으로 접속·이동·시야 진입/이탈 확인(프로토콜은 v8과 같다)
+  - 2,000명 20Hz에서 틱 처리 시간과 송신량을 v8(Windows IOCP) 결과와 비교해 benchmark.md에 기록
+  - 수신 멈춤/재개, partial send, 느린 클라이언트(송신 큐 상한) 시나리오
+  - `SIGTERM` graceful shutdown, ASan + LeakSanitizer
+- **구현 결과** (2026-11-22, 자세한 내용은 [server/v9/README.md](../server/v9/README.md)):
+  - reactor 1 + 틱 1 + 로거 1 + main(sigwait). epoll LT, 이벤트 키는 fd 대신 session_id(재사용된 fd와 섞이지 않게),
+    `sendmsg` + iovec 묶어 보내기, `MSG_NOSIGNAL`, `accept4(SOCK_NONBLOCK)`
+  - 봇 500 / 1,000 / 2,000명(초당 10회 이동 입력) 모두 시야 불일치 0. 2,000명 틱 평균 5.2~6.3ms, 최대 9.5ms, 늦은 틱 0
+  - 읽지 않는 클라이언트: partial send → `EPOLLOUT` 대기 → 송신 큐 4 MiB 초과 시 그 연결만 종료. SIGTERM 종료, ASan + LSan 경고 없음
+  - 수신 멈춤/재개: 기본 수위(8,192)에서는 job 큐 최대가 2,383이라 일어나지 않아, 수위를 200/50으로 낮춰 2,000명을 돌렸다.
+    멈춤 242,174회, 끝에 멈춘 세션 0, 끊김·시야 불일치 0, 늦은 틱 0
+  - 다시 검토(2026-11-23): 기능 검사(`tools/v9_check.py`)를 추가해 Release·ASan 통과. 리뷰에서 찾은 eventfd 수명 경쟁과
+    닫기 요청 반복을 고친 뒤 전체 시험을 다시 통과했다(자세한 내용은 feedback.md)
+  - 보완(2026-11-23): feedback.md의 v9 `[미적용]`을 모두 처리했다. 단위 테스트 13개(g++·MSVC), 게임 로직 벤치마크(v8↔v9 차이 분석),
+    수신 멈춤을 읽기 전에 판단, 입장·퇴장 틱당 상한(동시 입장 70.8 → 29ms), 스레드별 CPU 측정(reactor 46~52%),
+    서버·봇 코어 분리 측정, CI(`v9-linux.yml`), Server Lab에서 WSL2로 v9 실행
+
 각 버전은 `server/` 아래 `v1`, `v2` 등 버전별 하위 폴더(`include`/`src`/`CMakeLists.txt`)로 분리하고, 최상위 `server/CMakeLists.txt`가 `add_subdirectory()`로 각 버전을 불러온다. 버전마다 독립된 실행 파일(`v1_server`, `v2_server`, ...)로 빌드되어 언제든 원하는 버전을 골라 실행할 수 있다.
 
 ## 공통 테스트/QA 도구
@@ -284,3 +329,4 @@ Android 먼저, Unity 2022.3, 프로젝트는 저장소 밖 `D:\unity\Project\Cp
 - [x] v6 — Windows IOCP 기반 비동기 I/O 서버
 - [x] v7 — IOCP + 워커/game logic queue 결합
 - [x] v8 — 틱 기반 게임 루프 + 격자 AOI
+- [x] v9 — v8 틱 서버의 Linux(epoll) 이식
