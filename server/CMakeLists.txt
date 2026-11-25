@@ -31,5 +31,7 @@ else()
         add_subdirectory(v5)
         # v9는 v8(틱 + 격자 AOI)을 epoll로 옮긴 Linux 서버다.
         add_subdirectory(v9)
+        # v10은 같은 게임 로직을 io_uring으로 돌린다(liburing이 없으면 건너뛴다).
+        add_subdirectory(v10)
     endif()
 endif()

@@ -2,7 +2,7 @@
 
 namespace{
 bool Supports(int version, HostOs os){
-    if(os == HostOs::Linux) return (version >= 1 && version <= 5) || version == 9;
+    if(os == HostOs::Linux) return (version >= 1 && version <= 5) || version == 9 || version == 10;
     if(os == HostOs::MacOs) return version >= 1 && version <= 3;
     if(os == HostOs::Windows) return version >= 6 && version <= 8;
     return false;
@@ -44,6 +44,8 @@ std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available, 
             "틱마다 주변 셀 플레이어에게만 이동·입장·퇴장을 묶어 전송",true},
         {9,"v9 Tick + AOI on epoll","v9_server","v8 tick loop + grid AOI on Linux epoll reactor",
             "v8과 같은 화면. 네트워크 계층만 epoll(Linux)로 바뀜",true},
+        {10,"v10 Tick + AOI on io_uring","v10_server","v8 tick loop + grid AOI on Linux io_uring completions",
+            "v8·v9와 같은 화면. 네트워크 계층만 io_uring(Linux 완료 통지)으로 바뀜",true},
     };
     std::vector<ServerEntry> result;
     for(const auto& descriptor : descriptors){
@@ -51,12 +53,13 @@ std::vector<ServerEntry> Build_Server_Catalog(HostOs os, bool docker_available, 
             result.push_back({descriptor, Availability::NotImplemented, ExecutionMode::None, "아직 구현되지 않은 버전입니다."});
         }else if(os == HostOs::MacOs && descriptor.version >= 4 && descriptor.version <= 5 && docker_available){
             result.push_back({descriptor, Availability::Available, ExecutionMode::Docker, "사용 가능 — Docker Linux"});
-        }else if(os == HostOs::Windows && descriptor.version == 9 && wsl_available){
+        }else if(os == HostOs::Windows && descriptor.version >= 9 && wsl_available){
             result.push_back({descriptor, Availability::Available, ExecutionMode::Wsl,
-                "사용 가능 — WSL2 (처음 시작할 때 WSL 안에서 빌드)"});
+                descriptor.version == 10 ? "사용 가능 — WSL2 (처음 시작할 때 WSL 안에서 빌드, liburing-dev 필요)"
+                                         : "사용 가능 — WSL2 (처음 시작할 때 WSL 안에서 빌드)"});
         }else if(!Supports(descriptor.version, os)){
             result.push_back({descriptor, Availability::UnsupportedOs, ExecutionMode::None,
-                descriptor.version == 9 ? "Linux epoll 서버입니다. Windows에서는 WSL2가 있어야 실행할 수 있습니다."
+                descriptor.version >= 9 ? "Linux 서버입니다. Windows에서는 WSL2가 있어야 실행할 수 있습니다."
                 : descriptor.version <= 5 ? "POSIX/Linux 계열 서버로 현재 OS에서 실행할 수 없습니다."
                                           : "Windows IOCP 전용 서버입니다."});
         }else{

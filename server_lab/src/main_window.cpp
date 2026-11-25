@@ -447,12 +447,14 @@ void MainWindow::Start_Room(){
     }
     if(entry.execution_mode == ExecutionMode::Wsl){
         // WSL 안에서 빌드(바뀐 것만)한 뒤 서버를 실행한다. exec로 bash를 서버로 바꿔, 실험방 종료 때 Windows에서 보내는
-        // 줄바꿈이 서버의 표준 입력에 바로 닿게 한다(v9는 SIGTERM 외에 Enter로도 정상 종료한다).
-        // 빌드 폴더는 WSL 홈에 둔다. /tmp는 WSL이 꺼지면 지워진다.
+        // 줄바꿈이 서버의 표준 입력에 바로 닿게 한다(v9·v10은 SIGTERM 외에 Enter로도 정상 종료한다).
+        // 빌드 폴더는 WSL 홈에 둔다. /tmp는 WSL이 꺼지면 지워진다. v10은 WSL에 liburing-dev가 있어야 빌드된다.
         const QString server_dir = To_Wsl_Path(Repo_Root() + "/server");
+        const QString name = QString::fromStdString(entry.descriptor.executable);
         const QString script = QString(
             "cd '%1' && cmake -S . -B ~/v9build -DCMAKE_BUILD_TYPE=Release > /dev/null && "
-            "cmake --build ~/v9build --target v9_server -j > /dev/null && exec ~/v9build/v9/v9_server").arg(server_dir);
+            "cmake --build ~/v9build --target %2 -j > /dev/null && exec ~/v9build/v%3/%2")
+            .arg(server_dir, name, QString::number(entry.descriptor.version));
         auto* process = new QProcess(this);
         process->setProgram("wsl.exe");
         process->setArguments({"-e", "bash", "-lc", script});

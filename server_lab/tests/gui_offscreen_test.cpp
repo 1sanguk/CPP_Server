@@ -98,10 +98,11 @@ void Run_Version(int version, const QStringList& server_env, const std::function
     for(const QString& pair : server_env) env.insert(pair.section('=', 0, 0), pair.section('=', 1));
     server.setProcessEnvironment(env);
     server.setProcessChannelMode(QProcess::MergedChannels);
-    if(version == 9){
-        // v9는 Linux 서버라 Server Lab처럼 WSL2로 띄운다. 환경변수는 WSL로 넘어가지 않으므로 env 명령으로 준다.
+    if(version >= 9){
+        // v9·v10은 Linux 서버라 Server Lab처럼 WSL2로 띄운다. 환경변수는 WSL로 넘어가지 않으므로 env 명령으로 준다.
         // exec로 bash를 서버로 바꿔, 아래에서 보내는 줄바꿈이 서버의 표준 입력에 닿게 한다.
-        server.start("wsl.exe", {"-e", "bash", "-lc", "exec env " + server_env.join(' ') + " ~/v9build/v9/v9_server"});
+        server.start("wsl.exe", {"-e", "bash", "-lc",
+            "exec env " + server_env.join(' ') + QString(" ~/v9build/v%1/v%1_server").arg(version)});
     }else{
         server.start(Server_Path(version), {});
     }
@@ -275,13 +276,16 @@ int main(int argc, char** argv){
     Run_Version(7, {}, [](int){ return 1; }, shot_dir);
     // v8: 셀 하나(셀 크기 = 월드 크기)로 두면 모두 같은 시야라 전원이 받는다.
     Run_Version(8, {"V8_CELL_SIZE=1000", "V8_WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
-    // v9: v8과 같은 프로토콜·규칙이라 같은 기대값. WSL2에 ~/v9build/v9/v9_server가 빌드돼 있을 때만 돌린다.
-    QProcess probe;
-    probe.start("wsl.exe", {"-e", "bash", "-lc", "test -x ~/v9build/v9/v9_server"});
-    if(probe.waitForFinished(20000) && probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0){
-        Run_Version(9, {"V9_CELL_SIZE=1000", "V9_WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
-    }else{
-        std::printf("\n== v9 == skipped (WSL2 or ~/v9build/v9/v9_server not found)\n");
+    // v9·v10: v8과 같은 프로토콜·규칙이라 같은 기대값. WSL2에 ~/v9build/vN/vN_server가 빌드돼 있을 때만 돌린다.
+    for(int version : {9, 10}){
+        QProcess probe;
+        probe.start("wsl.exe", {"-e", "bash", "-lc", QString("test -x ~/v9build/v%1/v%1_server").arg(version)});
+        if(probe.waitForFinished(20000) && probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0){
+            const QString prefix = QString("V%1_").arg(version);
+            Run_Version(version, {prefix + "CELL_SIZE=1000", prefix + "WORLD_SIZE=120"}, [](int){ return 1; }, shot_dir);
+        }else{
+            std::printf("\n== v%d == skipped (WSL2 or ~/v9build/v%d/v%d_server not found)\n", version, version, version);
+        }
     }
 
     std::printf("\n%s (%d failure%s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures, failures == 1 ? "" : "s");

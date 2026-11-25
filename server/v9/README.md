@@ -79,7 +79,8 @@ main 스레드: sigwait(SIGINT/SIGTERM) → Stop() → eventfd write
 
 `[Status]`의 `phase_avg_us`는 v8과 같은 단계별 평균 시간이고, v9는 `wakes`(eventfd로 깨어난 수), `sendmsg_calls`,
 `partial_sends`(EAGAIN으로 `EPOLLOUT`을 기다린 수), `send_overflows`, `recv_pauses`, `jobs_deferred_now`/`jobs_deferred`
-(입장·퇴장 상한으로 미룬 job)를 함께 출력한다.
+(입장·퇴장 상한으로 미룬 job), `epoll_waits`/`recv_calls`(v10과 시스템 호출 수를 비교하려고 2026-11-25 추가), `job_queue_window_peak`(지난 출력 이후 job 큐 최대,
+같은 날 추가)를 함께 출력한다.
 
 ## 실행과 테스트
 

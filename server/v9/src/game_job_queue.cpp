@@ -13,6 +13,7 @@ bool GameJobQueue::Push(GameJob job){
     ++this->pushed_count;
     ++this->push_call_count;
     this->peak_size = (std::max)(this->peak_size, this->jobs.size());
+    this->window_peak_size = (std::max)(this->window_peak_size, this->jobs.size());
     // 소비자를 깨우지 않는다. 틱 루프는 정해진 시각에 스스로 깨어나 한꺼번에 가져간다.
     return true;
 }
@@ -31,6 +32,7 @@ bool GameJobQueue::Push_Batch(std::vector<GameJob>& batch){
     this->pushed_count += batch.size();
     ++this->push_call_count;
     this->peak_size = (std::max)(this->peak_size, this->jobs.size());
+    this->window_peak_size = (std::max)(this->window_peak_size, this->jobs.size());
     batch.clear();
     return true;
 }
@@ -75,4 +77,11 @@ std::uint64_t GameJobQueue::Pushed_Count(){
 std::uint64_t GameJobQueue::Push_Call_Count(){
     std::lock_guard<std::mutex> lock(this->queue_mutex);
     return this->push_call_count;
+}
+
+std::size_t GameJobQueue::Take_Window_Peak(){
+    std::lock_guard<std::mutex> lock(this->queue_mutex);
+    const std::size_t peak = this->window_peak_size;
+    this->window_peak_size = this->jobs.size();
+    return peak;
 }

@@ -273,6 +273,7 @@ void EpollWorldServer::Reactor_Loop(){
         const auto wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(next_status - now).count();
         const int timeout = static_cast<int>((std::max)(0LL, static_cast<long long>(wait_ms)));
         const int count = epoll_wait(this->epoll_fd, events.data(), static_cast<int>(events.size()), timeout);
+        ++this->epoll_wait_count;
         if(count < 0){
             if(errno == EINTR){
                 continue;
@@ -383,6 +384,7 @@ void EpollWorldServer::Handle_Readable(const std::shared_ptr<ClientSession>& ses
     // LT 모드: 몇 번만 읽고 돌아가도 남은 데이터가 있으면 다음 epoll_wait가 다시 알려 준다.
     for(int reads = 0; reads < kMaxReadsPerEvent; ++reads){
         const ssize_t received = recv(session->fd, this->recv_buffer.data(), this->recv_buffer.size(), 0);
+        ++this->recv_call_count;
         if(received > 0){
             session->assembler.Append(this->recv_buffer.data(), static_cast<std::size_t>(received));
             if(static_cast<std::size_t>(received) < this->recv_buffer.size()){
@@ -1015,6 +1017,7 @@ void EpollWorldServer::Log_Status(){
         ", skipped_ticks=" + std::to_string(this->skipped_tick_count.load()) +
         ", max_cell_population=" + std::to_string(this->max_cell_population.load()) +
         ", job_queue_peak=" + std::to_string(this->game_jobs.Peak_Size()) +
+        ", job_queue_window_peak=" + std::to_string(this->game_jobs.Take_Window_Peak()) +
         ", jobs_pushed=" + std::to_string(this->game_jobs.Pushed_Count()) +
         ", job_push_calls=" + std::to_string(this->game_jobs.Push_Call_Count()) +
         ", jobs_processed=" + std::to_string(this->processed_job_count.load()) +
@@ -1023,6 +1026,8 @@ void EpollWorldServer::Log_Status(){
         ", recv_pauses=" + std::to_string(this->recv_pause_count.load()) +
         ", wakes=" + std::to_string(this->wake_count.load()) +
         ", sendmsg_calls=" + std::to_string(this->writev_count.load()) +
+        ", epoll_waits=" + std::to_string(this->epoll_wait_count.load()) +
+        ", recv_calls=" + std::to_string(this->recv_call_count.load()) +
         ", partial_sends=" + std::to_string(this->partial_send_count.load()) +
         ", send_overflows=" + std::to_string(this->send_overflow_count.load()) +
         ", moves=" + std::to_string(this->move_input_count.load()) +

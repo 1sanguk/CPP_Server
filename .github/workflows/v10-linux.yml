@@ -1,0 +1,35 @@
+name: v10 Linux io_uring tick + AOI server
+
+# 학습 프로젝트라 push/PR마다 자동으로 돌리지 않고, 필요할 때 GitHub Actions 화면에서 직접 실행한다.
+# 테스트·측정 도구는 저장소에 올리지 않으므로(로컬 전용) liburing을 설치하고 Release·ASan 빌드가 되는지만 확인한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Release
+            build_type: Release
+            cmake_args: ""
+          - name: AddressSanitizer
+            build_type: RelWithDebInfo
+            cmake_args: "-DV10_ENABLE_ASAN=ON"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install liburing
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+
+      - name: Configure
+        run: cmake -S server -B build/v10 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_args }}
+
+      - name: Build v10
+        run: cmake --build build/v10 --target v10_server --parallel

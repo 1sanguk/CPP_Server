@@ -17,6 +17,7 @@ C++ 네트워크 서버를 v1부터 단계적으로 구현하고, GUI에서 버�
 | v7 | [IOCP + game logic queue 채팅](server/v7/README.md) | 완료 |
 | v8 | [틱 기반 게임 루프 + 격자 AOI](server/v8/README.md) | 완료 |
 | v9 | [v8 틱 서버의 Linux(epoll) 이식](server/v9/README.md) | 완료 |
+| v10 | [io_uring 기반 완료 통지 서버](server/v10/README.md) | 완료 |
 
 ```mermaid
 flowchart LR
@@ -28,17 +29,18 @@ flowchart LR
     V6 -->|"게임 로직 분리"| V7["v7<br/>IOCP + logic queue"]
     V7 -->|"틱 처리와 시야 제한"| V8["v8<br/>tick loop + AOI"]
     V8 -. "Linux 이식" .-> V9["v9<br/>epoll + tick loop"]
+    V9 -->|"완료 통지로"| V10["v10<br/>io_uring + tick loop"]
 ```
 
 ## 운영체제별 실행 범위
 
 | 호스트 | Native | Docker | 실행 불가 또는 미구현 |
 |---|---|---|---|
-| macOS | v1~v3 | v4~v5 | v6~v9 |
-| Linux | v1~v5, v9 | 필요 없음 | v6~v8 |
-| Windows | v6~v8, v9(WSL2) | 현재 GUI에서 미지원 | v1~v5 |
+| macOS | v1~v3 | v4~v5 | v6~v10 |
+| Linux | v1~v5, v9~v10 | 필요 없음 | v6~v8 |
+| Windows | v6~v8, v9~v10(WSL2) | 현재 GUI에서 미지원 | v1~v5 |
 
-v4~v5와 v9는 Linux의 `epoll`과 `eventfd`, v6~v8은 Windows의 Winsock2와 IOCP를 사용하므로 플랫폼별 실행 범위가 다릅니다. Windows에서 v9를 고르면 GUI가 WSL2 안에서 서버를 빌드해 띄웁니다(WSL2가 있어야 하고, 처음에는 빌드 때문에 시간이 걸립니다). 선택할 수 없는 버전도 구조와 설명은 GUI에서 확인할 수 있습니다.
+v4~v5와 v9는 Linux의 `epoll`과 `eventfd`, v10은 Linux의 `io_uring`(liburing 필요), v6~v8은 Windows의 Winsock2와 IOCP를 사용하므로 플랫폼별 실행 범위가 다릅니다. Windows에서 v9·v10을 고르면 GUI가 WSL2 안에서 서버를 빌드해 띄웁니다(WSL2가 있어야 하고, 처음에는 빌드 때문에 시간이 걸립니다. v10은 WSL에 `liburing-dev`가 있어야 합니다). 선택할 수 없는 버전도 구조와 설명은 GUI에서 확인할 수 있습니다.
 
 ## 빌드 구조
 

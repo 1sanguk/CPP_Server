@@ -161,6 +161,9 @@ class EpollWorldServer{
         std::atomic<std::uint64_t> recv_pause_count = 0;
         std::atomic<std::uint64_t> wake_count = 0;
         std::atomic<std::uint64_t> writev_count = 0;
+        // v10(io_uring)과 시스템 호출 수를 비교하기 위한 카운터
+        std::atomic<std::uint64_t> epoll_wait_count = 0;
+        std::atomic<std::uint64_t> recv_call_count = 0;
         std::atomic<std::uint64_t> partial_send_count = 0;
         std::atomic<std::uint64_t> send_overflow_count = 0;
         std::atomic<std::uint64_t> tick_count = 0;

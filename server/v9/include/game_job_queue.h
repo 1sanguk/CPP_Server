@@ -38,6 +38,7 @@ class GameJobQueue{
         std::condition_variable queue_condition;
         std::size_t capacity;
         std::size_t peak_size = 0;
+        std::size_t window_peak_size = 0;
         std::uint64_t pushed_count = 0;
         std::uint64_t push_call_count = 0;
         bool closed = false;
@@ -58,6 +59,8 @@ class GameJobQueue{
 
         std::size_t Size();
         std::size_t Peak_Size();
+        // 지난 호출 이후의 최대 길이를 돌려주고 0으로 되돌린다. 처음 접속이 몰릴 때의 최대와 이후 구간을 나눠 보기 위해서다.
+        std::size_t Take_Window_Peak();
         std::uint64_t Pushed_Count();
         // Push/Push_Batch 성공 호출 수. Pushed_Count와 비교하면 잠금 한 번에 평균 몇 개를 넣었는지 알 수 있다.
         std::uint64_t Push_Call_Count();

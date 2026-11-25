@@ -281,7 +281,7 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
 
 ### v10 — io_uring 기반 완료 통지 서버 (v9와 같은 게임 로직)
 
-- **상태**: 계획
+- **상태**: 완료 (2026-11-25). v9처럼 사용자 결정으로 Claude가 구현했다.
 - **목표**: v9의 epoll 네트워크 계층을 io_uring으로 바꾸고, 같은 게임 로직(틱 루프 + 격자 AOI) 위에서 세 가지 I/O 방식을 비교한다.
   - IOCP(v8, Windows 완료 통지), epoll(v9, Linux 준비 통지), io_uring(v10, Linux 완료 통지)
   - io_uring은 IOCP처럼 "버퍼를 맡기고 끝나면 알림"을 받는다. 그래서 v8에서 익힌 "커널이 버퍼를 쓰는 동안 수명 지키기"와
@@ -328,9 +328,19 @@ C++ 실전 경험이 적은 상태에서, MMO RPG 서버의 기초 밑단(네트
   - 수신 방식 비교: 고정 버퍼 ↔ provided buffer ring의 유휴 연결 1,000개 메모리, 2,000명 처리량
   - 느린 클라이언트(partial send, 송신 큐 상한), 수신 멈춤(수위 1,000/250), 셀 하나 1,000명 동시 입장·퇴장
   - 작업이 진행 중일 때 세션 닫기·서버 종료: 취소와 완료 회수 뒤 해제(ASan + LeakSanitizer로 use-after-free 없음 확인)
-- **정할 것(시작 전에)**:
-  - 구현 방식: 원래 규칙(사용자가 직접 구현, Claude는 힌트와 리뷰)으로 할지, v9처럼 Claude가 구현할지
-  - 수신 방식 1과 2를 둘 다 할지, 1만 하고 2는 보완으로 미룰지
+- **구현 결과** (2026-11-25, 자세한 내용은 [server/v10/README.md](../server/v10/README.md)):
+  - 수신 방식 1·2를 모두 만들어 `V10_RECV_MODE`(fixed / provided, 기본 provided)로 고른다
+  - ring 1 + 틱 1(틱 코드는 v9 그대로). SINGLE_ISSUER + DEFER_TASKRUN, multishot accept, user_data = 작업 종류 + session_id,
+    세션당 sendmsg 하나, `shutdown` + `cancel_fd` 후 완료가 모두 돌아온 뒤에만 `close`, 종료 때 진행 중 작업 0까지 회수
+  - 기능 검사(두 방식 각 6회), 봇 2,000명, 느린 클라이언트·동시 입장·퇴장(ASan), 수신 멈춤, Server Lab GUI(WSL2) 모두 통과. ASan 보고 0
+  - v9와 같은 조건(2,000명): 틱 시간은 같고(약 6ms), 초당 I/O 시스템 호출 약 69,000 → 9,000(약 1/7.6), I/O 스레드 CPU 43~45% → 38~41%.
+    유휴 연결당 메모리는 v9 2.4 KB, v10 fixed 10.6 KB, v10 provided 2.6 KB(+ 공용 버퍼 4 MiB)
+  - 확인하지 못한 것·남은 점: 수신 멈춤 넘침이 v9보다 큼(큐 최대 약 2,100), provided 버퍼가 멈춤·재개 중 잠깐 바닥남,
+    SQPOLL·등록 버퍼·고정 파일은 비교하지 않음
+  - CMake는 liburing을 pkg-config 없이 찾고, 없으면 v10만 건너뛴다. CI `v10-linux.yml`(수동, 빌드 확인), Server Lab에 v10 추가(WSL2)
+  - 보완(2026-11-25): feedback.md의 v10 `[미적용]`을 처리했다. 수신 멈춤 넘침(원인은 재개 때 한꺼번에 넣기, 수위 200에서 2,000명 약 1,100 → 231),
+    provided 버퍼 4,096 × 1 KiB(바닥남 0), SQPOLL·고정 파일 옵션과 측정(이 부하에서는 이득 없음, 기본 끔), 서버·봇 코어 분리 측정.
+    등록 버퍼는 송신 버퍼 구조상 맞지 않아 `[의도적 유지]`
 
 각 버전은 `server/` 아래 `v1`, `v2` 등 버전별 하위 폴더(`include`/`src`/`CMakeLists.txt`)로 분리하고, 최상위 `server/CMakeLists.txt`가 `add_subdirectory()`로 각 버전을 불러온다. 버전마다 독립된 실행 파일(`v1_server`, `v2_server`, ...)로 빌드되어 언제든 원하는 버전을 골라 실행할 수 있다.
 
@@ -383,4 +393,4 @@ Android 먼저, Unity 2022.3, 프로젝트는 저장소 밖 `D:\unity\Project\Cp
 - [x] v7 — IOCP + 워커/game logic queue 결합
 - [x] v8 — 틱 기반 게임 루프 + 격자 AOI
 - [x] v9 — v8 틱 서버의 Linux(epoll) 이식
-- [ ] v10 — io_uring 기반 완료 통지 서버
+- [x] v10 — io_uring 기반 완료 통지 서버
